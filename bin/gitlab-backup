@@ -1,0 +1,353 @@
+#!/usr/bin/env python
+
+from __future__ import print_function
+
+import argparse
+import collections
+import errno
+import getpass
+import gitlab
+import logging
+import os
+import select
+import subprocess
+import sys
+import urllib3
+
+try:
+    # python 3
+    from urllib.parse import urlparse
+except ImportError:
+    # python 2
+    from urlparse import urlparse
+
+
+urllib3.disable_warnings()
+FNULL = open(os.devnull, 'w')
+
+
+def log_error(message):
+    if type(message) == str:
+        message = [message]
+
+    for msg in message:
+        sys.stderr.write(" ! {0}\n".format(msg))
+
+
+def log_debug(message):
+    if type(message) == str:
+        message = [message]
+
+    for msg in message:
+        sys.stderr.write(" # {0}\n".format(msg))
+
+
+def log_fail(message):
+    if type(message) == str:
+        message = [message]
+
+    for msg in message:
+        sys.stderr.write(" ! {0}\n".format(msg))
+
+    sys.exit(1)
+
+
+def log_info(message):
+    if type(message) == str:
+        message = [message]
+
+    for msg in message:
+        sys.stdout.write("{0}\n".format(msg))
+
+
+def logging_subprocess(popenargs,
+                       logger,
+                       stdout_log_level=logging.DEBUG,
+                       stderr_log_level=logging.ERROR,
+                       **kwargs):
+    """
+    Variant of subprocess.call that accepts a logger instead of stdout/stderr,
+    and logs stdout messages via logger.debug and stderr messages via
+    logger.error.
+    """
+    child = subprocess.Popen(popenargs, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, **kwargs)
+    if sys.platform == 'win32':
+        log_info("Windows operating system detected - no subprocess logging will be returned")
+
+    log_level = {child.stdout: stdout_log_level,
+                 child.stderr: stderr_log_level}
+
+    def check_io():
+        if sys.platform == 'win32':
+            return
+        ready_to_read = select.select([child.stdout, child.stderr],
+                                      [],
+                                      [],
+                                      1000)[0]
+        for io in ready_to_read:
+            line = io.readline()
+            if not logger:
+                continue
+            if not (io == child.stderr and not line):
+                logger.log(log_level[io], line[:-1])
+
+    # keep checking stdout/stderr until the child exits
+    while child.poll() is None:
+        check_io()
+
+    check_io()  # check again to catch anything after the process exits
+
+    rc = child.wait()
+
+    if rc != 0:
+        print('{} returned {}:'.format(popenargs[0], rc), file=sys.stderr)
+        print('\t', ' '.join(popenargs), file=sys.stderr)
+
+    return rc
+
+
+def mkdir_p(*args):
+    for path in args:
+        try:
+            os.makedirs(path)
+        except OSError as exc:  # Python >2.5
+            if exc.errno == errno.EEXIST and os.path.isdir(path):
+                pass
+            else:
+                raise
+
+
+def mask_password(url, secret='*****'):
+    parsed = urlparse(url)
+
+    if not parsed.password:
+        return url
+    elif parsed.password == 'x-oauth-basic':
+        return url.replace(parsed.username, secret)
+
+    return url.replace(parsed.password, secret)
+
+
+def should_include_repository(args, attributes):
+    full_path = attributes['namespace']['full_path']
+    if args.namespace and args.namespace != full_path:
+        log_debug('Skipping {0} as namespace does not match {1}'.format(
+            attributes['path_with_namespace'], args.namespace
+        ))
+        return False
+    return True
+
+
+def fetch_repository(name,
+                     remote_url,
+                     local_dir,
+                     skip_existing=False,
+                     bare_clone=False,
+                     lfs_clone=False):
+    if bare_clone:
+        if os.path.exists(local_dir):
+            clone_exists = subprocess.check_output(['git',
+                                                    'rev-parse',
+                                                    '--is-bare-repository'],
+                                                   cwd=local_dir) == b"true\n"
+        else:
+            clone_exists = False
+    else:
+        clone_exists = os.path.exists(os.path.join(local_dir, '.git'))
+
+    if clone_exists and skip_existing:
+        return
+
+    masked_remote_url = mask_password(remote_url)
+
+    initialized = subprocess.call('git ls-remote ' + remote_url,
+                                  stdout=FNULL,
+                                  stderr=FNULL,
+                                  shell=True)
+    if initialized == 128:
+        log_info("Skipping {0} ({1}) since it's not initialized".format(
+            name, masked_remote_url))
+        return
+
+    if clone_exists:
+        log_info('Updating {0} in {1}'.format(name, local_dir))
+
+        remotes = subprocess.check_output(['git', 'remote', 'show'],
+                                          cwd=local_dir)
+        remotes = [i.strip() for i in remotes.decode('utf-8').splitlines()]
+
+        if 'origin' not in remotes:
+            git_command = ['git', 'remote', 'rm', 'origin']
+            logging_subprocess(git_command, None, cwd=local_dir)
+            git_command = ['git', 'remote', 'add', 'origin', remote_url]
+            logging_subprocess(git_command, None, cwd=local_dir)
+        else:
+            git_command = ['git', 'remote', 'set-url', 'origin', remote_url]
+            logging_subprocess(git_command, None, cwd=local_dir)
+
+        if lfs_clone:
+            git_command = ['git', 'lfs', 'fetch', '--all', '--force', '--tags', '--prune']
+        else:
+            git_command = ['git', 'fetch', '--all', '--force', '--tags', '--prune']
+        logging_subprocess(git_command, None, cwd=local_dir)
+    else:
+        log_info('Cloning {0} repository from {1} to {2}'.format(
+            name,
+            masked_remote_url,
+            local_dir))
+        if bare_clone:
+            if lfs_clone:
+                git_command = ['git', 'lfs', 'clone', '--mirror', remote_url, local_dir]
+            else:
+                git_command = ['git', 'clone', '--mirror', remote_url, local_dir]
+        else:
+            if lfs_clone:
+                git_command = ['git', 'lfs', 'clone', remote_url, local_dir]
+            else:
+                git_command = ['git', 'clone', remote_url, local_dir]
+        logging_subprocess(git_command, None)
+
+
+def backup_repository(args, item):
+    if not should_include_repository(args, item.attributes):
+        return
+
+    repo_name = item.path_with_namespace
+    repo_cwd = os.path.join(args.output_directory,
+                            'repositories',
+                            repo_name)
+
+    repo_dir = os.path.join(repo_cwd, 'repository')
+    repo_url = get_repo_url(args, item.attributes)
+    fetch_repository(repo_name,
+                     repo_url,
+                     repo_dir,
+                     skip_existing=args.skip_existing,
+                     bare_clone=args.clone_bare,
+                     lfs_clone=args.clone_lfs)
+
+
+def get_repo_url(args, attributes):
+    if args.prefer_ssh:
+        return attributes.get('ssh_url_to_repo', None)
+
+    return attributes.get('http_url_to_repo', None)
+
+
+def get_client(args):
+    if not args.host:
+        log_error('Missing --host flag')
+        return None
+
+    _path_specifier = 'file://'
+
+    client = None
+    if args.private_token:
+        if args.private_token.startswith(_path_specifier):
+            filename = args.private_token[len(_path_specifier):]
+            args.private_token = open(filename, 'rt').readline().strip()
+
+        client = gitlab.Gitlab(args.host,
+                               private_token=args.private_token,
+                               ssl_verify=args.disable_ssl_verification)
+    elif args.oauth_token:
+        if args.oauth_token.startswith(_path_specifier):
+            filename = args.oauth_token[len(_path_specifier):]
+            args.oauth_token = open(filename, 'rt').readline().strip()
+
+        client = gitlab.Gitlab(args.host,
+                               oauth_token=args.oauth_token,
+                               ssl_verify=args.disable_ssl_verification)
+    elif args.username:
+        if not args.password:
+            args.password = getpass.getpass()
+
+        if not args.password:
+            log_error('You must specify a password for basic auth')
+
+        client = gitlab.Gitlab(args.host,
+                               email=args.username,
+                               password=args.password,
+                               ssl_verify=args.disable_ssl_verification)
+        client.auth()
+    else:
+        client = gitlab.Gitlab(args.host,
+                               ssl_verify=args.disable_ssl_verification)
+
+    return client
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Backup a gitlab account')
+    parser.add_argument('--host',
+                        dest='host',
+                        help='gitlab host')
+    parser.add_argument('--username',
+                        dest='username',
+                        help='username for basic auth')
+    parser.add_argument('--password',
+                        dest='password',
+                        help='password for basic auth. '
+                             'If a username is given but not a password, the '
+                             'password will be prompted for.')
+    parser.add_argument('--oath-token',
+                        dest='oath_token',
+                        help='oath token, or path to token (file://...)')
+    parser.add_argument('--private-token',
+                        dest='private_token',
+                        help='private token, or path to token (file://...)')
+    parser.add_argument('--clone-bare',
+                        action='store_true',
+                        dest='clone_bare',
+                        help='clone bare repositories')
+    parser.add_argument('--clone-lfs',
+                        action='store_true',
+                        dest='clone_lfs',
+                        help='clone LFS repositories (requires Git LFS to be installed, https://git-lfs.github.com)')
+    parser.add_argument('--disable-ssl-verification',
+                        action='store_true',
+                        dest='disable_ssl_verification',
+                        help='disable ssl verification')
+    parser.add_argument('--namespace',
+                        default=None,
+                        dest='namespace',
+                        help='specify a gitlab namespace to backup')
+    parser.add_argument('--output-directory',
+                        default='.',
+                        dest='output_directory',
+                        help='directory at which to backup the repositories')
+    parser.add_argument('--prefer-ssh',
+                        action='store_true',
+                        dest='prefer_ssh',
+                        help='Clone repositories using SSH instead of HTTPS')
+    parser.add_argument('--skip-existing',
+                        action='store_true',
+                        dest='skip_existing',
+                        help='skip project if a backup directory exists')
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    client = get_client(args)
+    if not client:
+        log_fail('Unable to create gitlab client')
+
+    output_directory = os.path.realpath(args.output_directory)
+    if not os.path.isdir(output_directory):
+        log_info('Create output directory {0}'.format(output_directory))
+        mkdir_p(output_directory)
+
+    items = client.projects.list(as_list=False)
+    repositories = {}
+    for item in items:
+        repositories[item.path_with_namespace] = item
+
+    repositories = collections.OrderedDict(sorted(repositories.items()))
+    for path, item in repositories.items():
+        backup_repository(args, item)
+
+
+if __name__ == '__main__':
+    main()
