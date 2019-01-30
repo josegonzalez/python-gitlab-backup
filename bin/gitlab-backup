@@ -325,6 +325,10 @@ def parse_args():
                         action='store_true',
                         dest='skip_existing',
                         help='skip project if a backup directory exists')
+    parser.add_argument('--owned-only',
+                        action='store_true',
+                        dest='owned_only',
+                        help='Only backup projects owned by the provided user or key')
     return parser.parse_args()
 
 
@@ -339,7 +343,7 @@ def main():
         log_info('Create output directory {0}'.format(output_directory))
         mkdir_p(output_directory)
 
-    items = client.projects.list(as_list=False)
+    items = client.projects.list(as_list=False,owned=args.owned_only)
     repositories = {}
     for item in items:
         repositories[item.path_with_namespace] = item
