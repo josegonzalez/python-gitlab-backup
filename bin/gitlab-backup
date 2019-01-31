@@ -343,7 +343,7 @@ def main():
         log_info('Create output directory {0}'.format(output_directory))
         mkdir_p(output_directory)
 
-    items = client.projects.list(as_list=False,owned=args.owned_only)
+    items = client.projects.list(as_list=False, owned=args.owned_only)
     repositories = {}
     for item in items:
         repositories[item.path_with_namespace] = item
