@@ -329,6 +329,10 @@ def parse_args():
                         action='store_true',
                         dest='owned_only',
                         help='Only backup projects owned by the provided user or key')
+    parser.add_argument('--with-membership',
+                        action='store_true',
+                        dest='with_membership',
+                        help='Backup projects provided user or key is member of')
     return parser.parse_args()
 
 
@@ -343,7 +347,7 @@ def main():
         log_info('Create output directory {0}'.format(output_directory))
         mkdir_p(output_directory)
 
-    items = client.projects.list(as_list=False, owned=args.owned_only)
+    items = client.projects.list(as_list=False, owned=args.owned_only, membership=args.with_membership)
     repositories = {}
     for item in items:
         repositories[item.path_with_namespace] = item
