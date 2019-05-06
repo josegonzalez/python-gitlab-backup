@@ -58,6 +58,7 @@ CLI Usage is as follows::
                             directory at which to backup the repositories
       --prefer-ssh          Clone repositories using SSH instead of HTTPS
       --skip-existing       skip project if a backup directory exists
+      --with-membership     Backup projects provided user or key is member of
 
 
 .. |PyPI| image:: https://img.shields.io/pypi/v/gitlab-backup.svg
