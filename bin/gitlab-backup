@@ -291,9 +291,9 @@ def parse_args():
                         help='password for basic auth. '
                              'If a username is given but not a password, the '
                              'password will be prompted for.')
-    parser.add_argument('--oath-token',
-                        dest='oath_token',
-                        help='oath token, or path to token (file://...)')
+    parser.add_argument('--oauth-token',
+                        dest='oauth_token',
+                        help='oauth token, or path to token (file://...)')
     parser.add_argument('--private-token',
                         dest='private_token',
                         help='private token, or path to token (file://...)')
