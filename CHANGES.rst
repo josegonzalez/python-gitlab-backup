@@ -1,9 +1,14 @@
 Changelog
 =========
 
-0.3.1 (2020-12-02)
+0.3.2 (2020-12-02)
 ------------------
 ------------
+- Refactor: use twine for releases. [Jose Diaz-Gonzalez]
+
+
+0.3.1 (2020-12-02)
+------------------
 
 Fix
 ~~~
@@ -11,6 +16,7 @@ Fix
 
 Other
 ~~~~~
+- Release version 0.3.1. [Jose Diaz-Gonzalez]
 - Chore: update release script. [Jose Diaz-Gonzalez]
 - Create PULL_REQUEST.md. [Jose Diaz-Gonzalez]
 - Create ISSUE_TEMPLATE.md. [Jose Diaz-Gonzalez]
