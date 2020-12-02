@@ -22,7 +22,7 @@ CYAN="\033[0;36m"     # cyan
 pip install wheel > /dev/null
 
 command -v gitchangelog >/dev/null 2>&1 || {
-    echo -e "${RED}WARNING: Missing gitchangelog binary, please run: pip install gitchangelog==2.2.0${COLOR_OFF}\n"
+    echo -e "${RED}WARNING: Missing gitchangelog binary, please run: pip install gitchangelog==3.0.4${COLOR_OFF}\n"
     exit 1
 }
 
