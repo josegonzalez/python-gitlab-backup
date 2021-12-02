@@ -27,3 +27,5 @@ doc/_build
 doc/gitlab_backup.1
 
 README
+id_rsa
+id_rsa.pub
