@@ -27,5 +27,10 @@ doc/_build
 doc/gitlab_backup.1
 
 README
+
+# RSA
 id_rsa
 id_rsa.pub
+
+# Virtual env
+venv
