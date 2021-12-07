@@ -34,6 +34,7 @@ CLI Usage is as follows::
                          [--namespace NAMESPACE]
                          [--output-directory OUTPUT_DIRECTORY] [--prefer-ssh]
                          [--skip-existing]
+                         [--private_key]
 
     Backup a gitlab account
 
@@ -59,6 +60,7 @@ CLI Usage is as follows::
       --prefer-ssh          Clone repositories using SSH instead of HTTPS
       --skip-existing       skip project if a backup directory exists
       --with-membership     Backup projects provided user or key is member of
+      --private_key         To specify a private key
 
 
 .. |PyPI| image:: https://img.shields.io/pypi/v/gitlab-backup.svg
