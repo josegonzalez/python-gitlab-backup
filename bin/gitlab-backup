@@ -333,11 +333,21 @@ def parse_args():
                         action='store_true',
                         dest='with_membership',
                         help='Backup projects provided user or key is member of')
+    parser.add_argument('--private_key',
+                        default='',
+                        dest='private_key',
+                        help='Path to the private key')
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+
+    if args.private_key != '':
+        log_info('Use the private key: {0}'.format(args.private_key))
+        os.environ["GIT_SSH_COMMAND"] = 'ssh -i "{0}" -o IdentitiesOnly=yes'.format(args.private_key)
+        print(os.environ["GIT_SSH_COMMAND"])
+
     client = get_client(args)
     if not client:
         log_fail('Unable to create gitlab client')
