@@ -9,7 +9,7 @@ docutils==0.22.4
 flake8==7.3.0
 gitchangelog==3.0.4
 idna==3.11
-importlib-metadata==8.7.0
+importlib-metadata==8.7.1
 jaraco.classes==3.4.0
 keyring==25.7.0
 markdown-it-py==4.0.0
