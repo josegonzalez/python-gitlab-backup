@@ -18,7 +18,7 @@ mdurl==0.1.2
 more-itertools==10.8.0
 mypy-extensions==1.1.0
 packaging==25.0
-pathspec==1.0.1
+pathspec==1.0.2
 pkginfo==1.12.1.2
 platformdirs==4.5.1
 pycodestyle==2.14.0
@@ -34,6 +34,6 @@ setuptools==80.9.0
 six==1.17.0
 tqdm==4.67.1
 twine==6.2.0
-urllib3==2.6.2
+urllib3==2.6.3
 webencodings==0.5.1
 zipp==3.23.0
