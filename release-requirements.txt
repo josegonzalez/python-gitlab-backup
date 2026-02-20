@@ -29,7 +29,7 @@ requests==2.32.5
 requests-toolbelt==1.0.0
 restructuredtext-lint==2.0.2
 rfc3986==2.0.0
-rich==14.3.2
+rich==14.3.3
 setuptools==82.0.0
 six==1.17.0
 tqdm==4.67.3
