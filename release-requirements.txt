@@ -2,7 +2,7 @@ autopep8==2.3.2
 black==26.1.0
 bleach==6.3.0
 certifi==2026.2.25
-charset-normalizer==3.4.4
+charset-normalizer==3.4.5
 click==8.3.1
 colorama==0.4.6
 docutils==0.22.4
@@ -20,7 +20,7 @@ mypy-extensions==1.1.0
 packaging==26.0
 pathspec==1.0.4
 pkginfo==1.12.1.2
-platformdirs==4.9.2
+platformdirs==4.9.4
 pycodestyle==2.14.0
 pyflakes==3.4.0
 Pygments==2.19.2
