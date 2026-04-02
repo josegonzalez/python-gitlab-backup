@@ -25,7 +25,7 @@ pycodestyle==2.14.0
 pyflakes==3.4.0
 Pygments==2.20.0
 readme-renderer==44.0
-requests==2.33.0
+requests==2.33.1
 requests-toolbelt==1.0.0
 restructuredtext-lint==2.0.2
 rfc3986==2.0.0
