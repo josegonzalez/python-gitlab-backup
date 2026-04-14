@@ -36,4 +36,4 @@ tqdm==4.67.3
 twine==6.2.0
 urllib3==2.6.3
 webencodings==0.5.1
-zipp==3.23.0
+zipp==3.23.1
