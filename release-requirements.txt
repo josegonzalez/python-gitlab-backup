@@ -17,7 +17,7 @@ mccabe==0.7.0
 mdurl==0.1.2
 more-itertools==11.0.2
 mypy-extensions==1.1.0
-packaging==26.0
+packaging==26.1
 pathspec==1.0.4
 pkginfo==1.12.1.2
 platformdirs==4.9.6
