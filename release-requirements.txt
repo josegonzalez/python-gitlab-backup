@@ -5,10 +5,10 @@ certifi==2026.5.20
 charset-normalizer==3.4.7
 click==8.4.1
 colorama==0.4.6
-docutils==0.22.4
+docutils==0.23
 flake8==7.3.0
 gitchangelog==3.0.4
-idna==3.16
+idna==3.17
 importlib-metadata==9.0.0
 jaraco.classes==3.4.0
 keyring==25.7.0
@@ -20,7 +20,7 @@ mypy-extensions==1.1.0
 packaging==26.2
 pathspec==1.1.1
 pkginfo==1.12.1.2
-platformdirs==4.9.6
+platformdirs==4.10.0
 pycodestyle==2.14.0
 pyflakes==3.4.0
 Pygments==2.20.0
