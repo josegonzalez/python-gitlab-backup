@@ -24,7 +24,7 @@ platformdirs==4.10.0
 pycodestyle==2.14.0
 pyflakes==3.4.0
 Pygments==2.20.0
-readme-renderer==44.0
+readme-renderer==45.0
 requests==2.34.2
 requests-toolbelt==1.0.0
 restructuredtext-lint==2.0.2
@@ -32,7 +32,7 @@ rfc3986==2.0.0
 rich==15.0.0
 setuptools==82.0.1
 six==1.17.0
-tqdm==4.68.1
+tqdm==4.68.2
 twine==6.2.0
 urllib3==2.7.0
 webencodings==0.5.1
