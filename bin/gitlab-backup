@@ -264,7 +264,7 @@ def get_client(args):
         client = gitlab.Gitlab(
             args.host,
             private_token=args.private_token,
-            ssl_verify=args.disable_ssl_verification,
+            ssl_verify=not args.disable_ssl_verification,
         )
     elif args.oauth_token:
         if args.oauth_token.startswith(_path_specifier):
@@ -274,7 +274,7 @@ def get_client(args):
         client = gitlab.Gitlab(
             args.host,
             oauth_token=args.oauth_token,
-            ssl_verify=args.disable_ssl_verification,
+            ssl_verify=not args.disable_ssl_verification,
         )
     elif args.username:
         if not args.password:
@@ -287,11 +287,13 @@ def get_client(args):
             args.host,
             email=args.username,
             password=args.password,
-            ssl_verify=args.disable_ssl_verification,
+            ssl_verify=not args.disable_ssl_verification,
         )
         client.auth()
     else:
-        client = gitlab.Gitlab(args.host, ssl_verify=args.disable_ssl_verification)
+        client = gitlab.Gitlab(
+            args.host, ssl_verify=not args.disable_ssl_verification
+        )
 
     return client
 
