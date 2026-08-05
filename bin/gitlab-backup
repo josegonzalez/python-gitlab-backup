@@ -397,7 +397,7 @@ def main():
         mkdir_p(output_directory)
 
     items = client.projects.list(
-        as_list=False, owned=args.owned_only, membership=args.with_membership
+        get_all=True, owned=args.owned_only, membership=args.with_membership
     )
     repositories = {}
     for item in items:
