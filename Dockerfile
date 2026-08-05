@@ -1,7 +1,8 @@
-FROM python:3.12-alpine3.22 AS builder
+FROM python:3.14-alpine3.24 AS builder
 
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+ENV UV_LINK_MODE=copy
+ENV UV_PYTHON_DOWNLOADS=0
 
 WORKDIR /app
 
@@ -17,7 +18,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install .
 
 
-FROM python:3.12-alpine3.22
+FROM python:3.14-alpine3.24
 ENV PYTHONUNBUFFERED=1
 
 RUN apk add --no-cache \
@@ -25,9 +26,10 @@ RUN apk add --no-cache \
     git \
     git-lfs \
     && addgroup -g 1000 appuser \
-    && adduser -D -u 1000 -G appuser appuser
+    && adduser -D -u 1000 -G appuser appuser \
+    && git lfs install
 
-COPY --from=builder --chown=appuser:appuser /app /app
+COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 
 WORKDIR /app
 
