@@ -196,8 +196,6 @@ def fetch_repository(
                 "lfs",
                 "fetch",
                 "--all",
-                "--force",
-                "--tags",
                 "--prune",
             ]
         else:
