@@ -23,8 +23,9 @@ except ImportError:
     pass
 
 
-def open_file(fname):
-    return open(os.path.join(os.path.dirname(__file__), fname))
+def read_file(fname):
+    with open(os.path.join(os.path.dirname(__file__), fname)) as f:
+        return f.read()
 
 
 setup(
@@ -40,15 +41,15 @@ setup(
         "Development Status :: 5 - Production/Stable",
         "Topic :: System :: Archiving :: Backup",
         "License :: OSI Approved :: MIT License",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
     ],
     description="backup a gitlab user or organization",
-    long_description=open_file("README.rst").read(),
+    long_description=read_file("README.rst"),
     long_description_content_type="text/x-rst",
-    install_requires=open_file("requirements.txt").readlines(),
+    install_requires=read_file("requirements.txt").splitlines(),
     zip_safe=True,
 )

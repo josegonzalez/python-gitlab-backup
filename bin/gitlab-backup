@@ -1,7 +1,5 @@
 #!/usr/bin/env python
 
-from __future__ import print_function
-
 import argparse
 import base64
 import collections
@@ -16,20 +14,14 @@ import sys
 import gitlab
 import urllib3
 
-try:
-    # python 3
-    from urllib.parse import urlparse
-except ImportError:
-    # python 2
-    from urlparse import urlparse
+from urllib.parse import urlparse
 
 
 urllib3.disable_warnings()
-FNULL = open(os.devnull, "w", encoding="utf-8")
 
 
 def log_error(message):
-    if type(message) == str:
+    if isinstance(message, str):
         message = [message]
 
     for msg in message:
@@ -37,7 +29,7 @@ def log_error(message):
 
 
 def log_debug(message):
-    if type(message) == str:
+    if isinstance(message, str):
         message = [message]
 
     for msg in message:
@@ -45,7 +37,7 @@ def log_debug(message):
 
 
 def log_fail(message):
-    if type(message) == str:
+    if isinstance(message, str):
         message = [message]
 
     for msg in message:
@@ -55,7 +47,7 @@ def log_fail(message):
 
 
 def log_info(message):
-    if type(message) == str:
+    if isinstance(message, str):
         message = [message]
 
     for msg in message:
@@ -180,7 +172,7 @@ def fetch_repository(
 
     ls_remote_cmd = ["git"] + extra_args + ["ls-remote", remote_url]
     initialized = subprocess.call(
-        ls_remote_cmd, stdout=FNULL, stderr=FNULL
+        ls_remote_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
     if initialized == 128:
         log_info(
@@ -197,8 +189,6 @@ def fetch_repository(
         remotes = [i.strip() for i in remotes.decode("utf-8").splitlines()]
 
         if "origin" not in remotes:
-            git_command = ["git"] + extra_args + ["remote", "rm", "origin"]
-            logging_subprocess(git_command, None, cwd=local_dir)
             git_command = ["git"] + extra_args + ["remote", "add", "origin", remote_url]
             logging_subprocess(git_command, None, cwd=local_dir)
         else:
@@ -224,15 +214,9 @@ def fetch_repository(
             )
         )
         if bare_clone:
-            if lfs_clone:
-                git_command = ["git"] + extra_args + ["lfs", "clone", "--mirror", remote_url, local_dir]
-            else:
-                git_command = ["git"] + extra_args + ["clone", "--mirror", remote_url, local_dir]
+            git_command = ["git"] + extra_args + ["clone", "--mirror", remote_url, local_dir]
         else:
-            if lfs_clone:
-                git_command = ["git"] + extra_args + ["lfs", "clone", remote_url, local_dir]
-            else:
-                git_command = ["git"] + extra_args + ["clone", remote_url, local_dir]
+            git_command = ["git"] + extra_args + ["clone", remote_url, local_dir]
         logging_subprocess(git_command, None)
 
 
@@ -245,6 +229,9 @@ def backup_repository(args, item):
 
     repo_dir = os.path.join(repo_cwd, "repository")
     repo_url = get_repo_url(args, item.attributes)
+    if not repo_url:
+        log_error("Could not determine repository URL for {0}".format(repo_name))
+        return
     fetch_repository(
         args,
         repo_name,
@@ -274,7 +261,8 @@ def get_client(args):
     if args.private_token:
         if args.private_token.startswith(_path_specifier):
             filename = args.private_token[len(_path_specifier) :]
-            args.private_token = open(filename, "rt").readline().strip()
+            with open(filename, "rt") as f:
+                args.private_token = f.readline().strip()
 
         client = gitlab.Gitlab(
             args.host,
@@ -284,7 +272,8 @@ def get_client(args):
     elif args.oauth_token:
         if args.oauth_token.startswith(_path_specifier):
             filename = args.oauth_token[len(_path_specifier) :]
-            args.oauth_token = open(filename, "rt").readline().strip()
+            with open(filename, "rt") as f:
+                args.oauth_token = f.readline().strip()
 
         client = gitlab.Gitlab(
             args.host,
@@ -296,7 +285,7 @@ def get_client(args):
             args.password = getpass.getpass()
 
         if not args.password:
-            log_error("You must specify a password for basic auth")
+            log_fail("You must specify a password for basic auth")
 
         client = gitlab.Gitlab(
             args.host,
