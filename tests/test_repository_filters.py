@@ -6,8 +6,9 @@ import logging
 import pytest
 
 from gitlab_backup.gitlab_backup import (
-    get_git_extra_args,
+    get_git_env,
     get_repo_url,
+    read_token,
     should_include_repository,
 )
 
@@ -85,40 +86,109 @@ class TestGetRepoUrl:
         assert get_repo_url(args, attrs) is None
 
 
-class TestGetGitExtraArgs:
-    def test_no_token_yields_no_args(self, create_args):
+class TestGetGitEnv:
+    """The credential goes in the environment so it stays out of `ps`."""
+
+    def test_no_token_leaves_git_config_untouched(self, create_args):
         args = create_args()
 
-        assert get_git_extra_args(args) == []
+        env = get_git_env(args)
 
-    def test_private_token_becomes_basic_auth_header(self, create_args):
+        assert "GIT_CONFIG_COUNT" not in env
+        assert "GIT_CONFIG_KEY_0" not in env
+
+    def test_private_token_becomes_a_git_config_entry(self, create_args):
         args = create_args(private_token="glpat-secret")
 
-        extra_args = get_git_extra_args(args)
+        env = get_git_env(args)
 
         expected = base64.b64encode(b"oauth2:glpat-secret").decode("utf-8")
-        assert extra_args == [
-            "-c",
-            "http.extraHeader=Authorization: Basic {0}".format(expected),
-        ]
+        assert env["GIT_CONFIG_COUNT"] == "1"
+        assert env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
+        assert env["GIT_CONFIG_VALUE_0"] == "Authorization: Basic {0}".format(expected)
 
-    def test_oauth_token_becomes_basic_auth_header(self, create_args):
+    def test_oauth_token_becomes_a_git_config_entry(self, create_args):
         args = create_args(oauth_token="oauth-secret")
 
-        extra_args = get_git_extra_args(args)
+        env = get_git_env(args)
 
         expected = base64.b64encode(b"oauth2:oauth-secret").decode("utf-8")
-        assert extra_args == [
-            "-c",
-            "http.extraHeader=Authorization: Basic {0}".format(expected),
-        ]
+        assert env["GIT_CONFIG_VALUE_0"] == "Authorization: Basic {0}".format(expected)
 
     def test_private_token_wins_over_oauth_token(self, create_args):
         args = create_args(private_token="glpat-secret", oauth_token="oauth-secret")
 
-        header = get_git_extra_args(args)[1]
+        env = get_git_env(args)
 
-        assert base64.b64encode(b"oauth2:glpat-secret").decode("utf-8") in header
+        expected = base64.b64encode(b"oauth2:glpat-secret").decode("utf-8")
+        assert env["GIT_CONFIG_VALUE_0"] == "Authorization: Basic {0}".format(expected)
+
+    def test_inherits_the_parent_environment(self, create_args, monkeypatch):
+        monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i /key")
+        args = create_args()
+
+        assert get_git_env(args)["GIT_SSH_COMMAND"] == "ssh -i /key"
+
+    def test_existing_git_config_entries_are_not_overwritten(
+        self, create_args, monkeypatch
+    ):
+        """Appending at the next index keeps a caller's own GIT_CONFIG_* intact."""
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "someone")
+        args = create_args(private_token="glpat-secret")
+
+        env = get_git_env(args)
+
+        assert env["GIT_CONFIG_COUNT"] == "2"
+        assert env["GIT_CONFIG_KEY_0"] == "user.name"
+        assert env["GIT_CONFIG_KEY_1"] == "http.extraHeader"
+
+    def test_unparseable_git_config_count_is_ignored(self, create_args, monkeypatch):
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "not-a-number")
+        args = create_args(private_token="glpat-secret")
+
+        env = get_git_env(args)
+
+        assert env["GIT_CONFIG_COUNT"] == "1"
+        assert env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
+
+    def test_token_never_appears_in_a_command_line(self, create_args):
+        """Regression guard: the old implementation returned -c arguments."""
+        args = create_args(private_token="glpat-secret")
+
+        env = get_git_env(args)
+
+        assert not any("glpat-secret" in key for key in env)
+
+
+class TestReadToken:
+    """get_git_env resolves file:// itself rather than relying on get_client
+    having already rewritten args as a side effect."""
+
+    def test_inline_token_is_returned_as_is(self):
+        assert read_token("glpat-secret") == "glpat-secret"
+
+    def test_none_is_passed_through(self):
+        assert read_token(None) is None
+
+    def test_file_uri_is_read_and_stripped(self, tmp_path):
+        token_file = tmp_path / "token"
+        token_file.write_text("glpat-from-file\n")
+
+        assert read_token("file://{0}".format(token_file)) == "glpat-from-file"
+
+    def test_git_env_resolves_a_file_uri_without_get_client(
+        self, create_args, tmp_path
+    ):
+        token_file = tmp_path / "token"
+        token_file.write_text("glpat-from-file\n")
+        args = create_args(private_token="file://{0}".format(token_file))
+
+        env = get_git_env(args)
+
+        expected = base64.b64encode(b"oauth2:glpat-from-file").decode("utf-8")
+        assert env["GIT_CONFIG_VALUE_0"] == "Authorization: Basic {0}".format(expected)
 
 
 if __name__ == "__main__":

@@ -100,23 +100,32 @@ class TestFreshClone:
             ["git", "lfs", "fetch", "--all", "--prune"],
         ]
 
-    def test_auth_args_are_prepended_to_git(self, create_args, git):
+    def test_credentials_never_reach_the_command_line(self, create_args, git):
         args = create_args(private_token="glpat-secret")
 
         fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
 
-        command = git.commands[0]
-        assert command[:2] == ["git", "-c"]
-        assert command[2].startswith("http.extraHeader=Authorization: Basic ")
+        for command in git.commands:
+            assert not any("glpat-secret" in arg for arg in command)
+            assert "-c" not in command
 
-    def test_auth_args_are_used_for_ls_remote(self, create_args, git):
+    def test_credentials_are_passed_through_the_environment(self, create_args, git):
         args = create_args(private_token="glpat-secret")
 
         fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
 
-        ls_remote_cmd = git.call.call_args.args[0]
-        assert ls_remote_cmd[:2] == ["git", "-c"]
-        assert ls_remote_cmd[-2:] == ["ls-remote", REMOTE_URL]
+        env = git.logging_subprocess.call_args.kwargs["env"]
+        assert env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
+
+    def test_ls_remote_also_uses_the_authenticated_environment(self, create_args, git):
+        args = create_args(private_token="glpat-secret")
+
+        fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert git.call.call_args.args[0] == ["git", "ls-remote", REMOTE_URL]
+        assert git.call.call_args.kwargs["env"]["GIT_CONFIG_KEY_0"] == (
+            "http.extraHeader"
+        )
 
     def test_skip_existing_does_not_skip_a_missing_clone(self, create_args, git):
         args = create_args()

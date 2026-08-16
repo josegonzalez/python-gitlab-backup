@@ -130,5 +130,46 @@ class TestLoggingSubprocess:
         assert tmp_path.name in messages
 
 
+class TestCredentialMasking:
+    """A failing git command must not print credentials to stderr."""
+
+    def test_extra_header_is_redacted_in_failure_output(self, capsys):
+        rc = gitlab_backup.logging_subprocess(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.exit(1)",
+                "http.extraHeader=Authorization: Basic b2F1dGgyOmdscGF0LXNlY3JldA==",
+            ]
+        )
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "b2F1dGgyOmdscGF0LXNlY3JldA==" not in captured.err
+        assert "http.extraHeader=*****" in captured.err
+
+    def test_url_password_is_redacted_in_failure_output(self, capsys):
+        rc = gitlab_backup.logging_subprocess(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.exit(1)",
+                "https://someone:hunter2@gitlab.example.com/group/project.git",
+            ]
+        )
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "hunter2" not in captured.err
+        assert "*****" in captured.err
+
+    def test_ordinary_arguments_are_left_alone(self):
+        assert gitlab_backup.mask_command(["git", "fetch", "--all"]) == [
+            "git",
+            "fetch",
+            "--all",
+        ]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -12,15 +12,36 @@ import threading
 import gitlab
 import urllib3
 
-from urllib.parse import urlparse
-
-urllib3.disable_warnings()
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
+
+SECRET = "*****"
+
+FILE_URI_PREFIX = "file://"
 
 
 class GitCommandError(Exception):
     """Raised when a git subprocess exits non-zero."""
+
+
+def mask_command(popenargs):
+    """Redact credentials from a command line before it is displayed.
+
+    Tokens reach git through the environment, but a remote URL may still carry
+    embedded credentials, and callers may pass -c http.extraHeader themselves.
+    """
+    masked = []
+    for arg in popenargs:
+        arg = str(arg)
+        if "http.extraHeader=" in arg:
+            prefix, _, _value = arg.partition("http.extraHeader=")
+            masked.append("{0}http.extraHeader={1}".format(prefix, SECRET))
+        elif "://" in arg:
+            masked.append(mask_password(arg))
+        else:
+            masked.append(arg)
+    return masked
 
 
 def logging_subprocess(
@@ -67,7 +88,7 @@ def logging_subprocess(
 
     if rc != 0:
         print("{} returned {}:".format(popenargs[0], rc), file=sys.stderr)
-        print("\t", " ".join(popenargs), file=sys.stderr)
+        print("\t", " ".join(mask_command(popenargs)), file=sys.stderr)
 
     return rc
 
@@ -81,7 +102,7 @@ def run_git(popenargs, **kwargs):
     rc = logging_subprocess(popenargs, **kwargs)
     if rc != 0:
         raise GitCommandError(
-            "{0} exited with code {1}".format(" ".join(popenargs), rc)
+            "{0} exited with code {1}".format(" ".join(mask_command(popenargs)), rc)
         )
     return rc
 
@@ -91,15 +112,38 @@ def mkdir_p(*args):
         os.makedirs(path, exist_ok=True)
 
 
-def mask_password(url, secret="*****"):
+def mask_password(url, secret=SECRET):
+    """Redact the credential in a URL, leaving the rest of it readable.
+
+    Only the userinfo section is rewritten. A blind substring replace would
+    also hit the host and path whenever the password happens to appear there,
+    destroying the very detail the log line exists to convey.
+    """
     parsed = urlparse(url)
 
     if not parsed.password:
         return url
-    elif parsed.password == "x-oauth-basic":
-        return url.replace(parsed.username, secret)
 
-    return url.replace(parsed.password, secret)
+    userinfo, _, hostport = parsed.netloc.rpartition("@")
+    username, _, _password = userinfo.partition(":")
+
+    if parsed.password == "x-oauth-basic":
+        # The token is the username in this scheme
+        masked_userinfo = "{0}:{1}".format(secret, parsed.password)
+    else:
+        masked_userinfo = "{0}:{1}".format(username, secret)
+
+    return urlunparse(
+        parsed._replace(netloc="{0}@{1}".format(masked_userinfo, hostport))
+    )
+
+
+def read_token(value):
+    """Resolve a token that may be given inline or as file://path."""
+    if value and value.startswith(FILE_URI_PREFIX):
+        with open(value[len(FILE_URI_PREFIX) :], "rt") as f:
+            return f.readline().strip()
+    return value
 
 
 def should_include_repository(args, attributes):
@@ -114,16 +158,32 @@ def should_include_repository(args, attributes):
     return True
 
 
-def get_git_extra_args(args):
-    if args.private_token:
-        auth_pair = "oauth2:{0}".format(args.private_token).encode("utf-8")
-        b64_auth = base64.b64encode(auth_pair).decode("utf-8")
-        return ["-c", "http.extraHeader=Authorization: Basic {0}".format(b64_auth)]
-    elif args.oauth_token:
-        auth_pair = "oauth2:{0}".format(args.oauth_token).encode("utf-8")
-        b64_auth = base64.b64encode(auth_pair).decode("utf-8")
-        return ["-c", "http.extraHeader=Authorization: Basic {0}".format(b64_auth)]
-    return []
+def get_git_env(args):
+    """Build the environment for git subprocesses.
+
+    The credential travels in GIT_CONFIG_* rather than on the command line so
+    it does not appear in `ps` output. Requires git 2.31+.
+    """
+    env = os.environ.copy()
+
+    token = read_token(args.private_token or args.oauth_token)
+    if not token:
+        return env
+
+    auth_pair = "oauth2:{0}".format(token).encode("utf-8")
+    b64_auth = base64.b64encode(auth_pair).decode("utf-8")
+
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        count = 0
+
+    env["GIT_CONFIG_KEY_{0}".format(count)] = "http.extraHeader"
+    env["GIT_CONFIG_VALUE_{0}".format(count)] = "Authorization: Basic {0}".format(
+        b64_auth
+    )
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+    return env
 
 
 def check_git_lfs_install():
@@ -149,11 +209,15 @@ def fetch_repository(
     bare_clone=False,
     lfs_clone=False,
 ):
+    git_env = get_git_env(args)
+
     if bare_clone:
         if os.path.exists(local_dir):
             clone_exists = (
                 subprocess.check_output(
-                    ["git", "rev-parse", "--is-bare-repository"], cwd=local_dir
+                    ["git", "rev-parse", "--is-bare-repository"],
+                    cwd=local_dir,
+                    env=git_env,
                 )
                 == b"true\n"
             )
@@ -166,13 +230,15 @@ def fetch_repository(
         return
 
     masked_remote_url = mask_password(remote_url)
-    extra_args = get_git_extra_args(args)
 
-    ls_remote_cmd = ["git"] + extra_args + ["ls-remote", remote_url]
     # An empty-but-existing repository answers ls-remote with an exit code of 0
     # and no refs, so a non-zero code always means the remote could not be read
     initialized = subprocess.call(
-        ls_remote_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ["git", "ls-remote", remote_url],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=git_env,
     )
     if initialized != 0:
         raise GitCommandError(
@@ -184,20 +250,22 @@ def fetch_repository(
     if clone_exists:
         logger.info("Updating {0} in {1}".format(name, local_dir))
 
-        remotes = subprocess.check_output(["git", "remote", "show"], cwd=local_dir)
+        remotes = subprocess.check_output(
+            ["git", "remote", "show"], cwd=local_dir, env=git_env
+        )
         remotes = [i.strip() for i in remotes.decode("utf-8").splitlines()]
 
         if "origin" not in remotes:
-            git_command = ["git"] + extra_args + ["remote", "add", "origin", remote_url]
-            run_git(git_command, cwd=local_dir)
+            git_command = ["git", "remote", "add", "origin", remote_url]
+            run_git(git_command, cwd=local_dir, env=git_env)
         else:
-            git_command = (
-                ["git"] + extra_args + ["remote", "set-url", "origin", remote_url]
-            )
-            run_git(git_command, cwd=local_dir)
+            git_command = ["git", "remote", "set-url", "origin", remote_url]
+            run_git(git_command, cwd=local_dir, env=git_env)
 
         run_git(
-            ["git", "fetch", "--all", "--force", "--tags", "--prune"], cwd=local_dir
+            ["git", "fetch", "--all", "--force", "--tags", "--prune"],
+            cwd=local_dir,
+            env=git_env,
         )
     else:
         logger.info(
@@ -206,17 +274,15 @@ def fetch_repository(
             )
         )
         if bare_clone:
-            git_command = (
-                ["git"] + extra_args + ["clone", "--mirror", remote_url, local_dir]
-            )
+            git_command = ["git", "clone", "--mirror", remote_url, local_dir]
         else:
-            git_command = ["git"] + extra_args + ["clone", remote_url, local_dir]
-        run_git(git_command)
+            git_command = ["git", "clone", remote_url, local_dir]
+        run_git(git_command, env=git_env)
 
     # LFS objects are fetched in addition to the refs above, never instead of
     # them, otherwise a --clone-lfs backup would stop receiving new commits
     if lfs_clone:
-        run_git(["git", "lfs", "fetch", "--all", "--prune"], cwd=local_dir)
+        run_git(["git", "lfs", "fetch", "--all", "--prune"], cwd=local_dir, env=git_env)
 
 
 def backup_repository(args, item):
@@ -254,14 +320,14 @@ def get_client(args):
         logger.error("Missing --host flag")
         return None
 
-    _path_specifier = "file://"
+    if args.disable_ssl_verification:
+        # Only silence urllib3 when the user asked for unverified TLS, so a
+        # genuine certificate problem is still visible by default
+        urllib3.disable_warnings()
 
     client = None
     if args.private_token:
-        if args.private_token.startswith(_path_specifier):
-            filename = args.private_token[len(_path_specifier) :]
-            with open(filename, "rt") as f:
-                args.private_token = f.readline().strip()
+        args.private_token = read_token(args.private_token)
 
         client = gitlab.Gitlab(
             args.host,
@@ -269,10 +335,7 @@ def get_client(args):
             ssl_verify=not args.disable_ssl_verification,
         )
     elif args.oauth_token:
-        if args.oauth_token.startswith(_path_specifier):
-            filename = args.oauth_token[len(_path_specifier) :]
-            with open(filename, "rt") as f:
-                args.oauth_token = f.readline().strip()
+        args.oauth_token = read_token(args.oauth_token)
 
         client = gitlab.Gitlab(
             args.host,
