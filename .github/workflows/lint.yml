@@ -28,6 +28,6 @@ jobs:
           cache: "pip"
       - run: pip install -r release-requirements.txt && pip install wheel
       - run: flake8 --ignore=E501,E203,W503
-      - run: black .
+      - run: black --check --diff .
       - run: rst-lint README.rst
       - run: python setup.py sdist bdist_wheel && twine check dist/*

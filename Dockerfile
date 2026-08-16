@@ -8,9 +8,8 @@ WORKDIR /app
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=requirements.txt,target=requirements.txt \
-    --mount=type=bind,source=release-requirements.txt,target=release-requirements.txt \
     uv venv \
-    && uv pip install -r release-requirements.txt
+    && uv pip install -r requirements.txt
 
 COPY . .
 

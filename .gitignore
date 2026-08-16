@@ -44,6 +44,11 @@ README
 id_rsa
 id_rsa.pub
 
+# Environment variables
+.env
+.env.*
+!.env.example
+
 # Virtual env
 venv
 .venv

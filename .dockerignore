@@ -60,14 +60,14 @@ venv
 !.env.example
 *.log
 
+# Cache files
+**/__pycache__/
+*.py[cod]
+
 # Tests
 tests
 pytest.ini
 .pytest_cache
-
-# Cache files
-**/__pycache__/
-*.py[cod]
 
 # Docker files
 docker-compose.yml
