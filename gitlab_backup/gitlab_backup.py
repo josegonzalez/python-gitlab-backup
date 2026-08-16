@@ -2,7 +2,6 @@
 
 import argparse
 import base64
-import getpass
 import logging
 import os
 import collections
@@ -686,19 +685,13 @@ def get_client(args):
             ssl_verify=not args.disable_ssl_verification,
         )
     elif args.username:
-        if not args.password:
-            args.password = getpass.getpass()
-
-        if not args.password:
-            raise Exception("You must specify a password for basic auth")
-
-        client = gitlab.Gitlab(
-            args.host,
-            email=args.username,
-            password=args.password,
-            ssl_verify=not args.disable_ssl_verification,
+        raise Exception(
+            "--username and --password are no longer usable: GitLab removed "
+            "password authentication from its API, and python-gitlab dropped "
+            "support for it in 3.0. Create a personal access token with the "
+            "read_api and read_repository scopes and pass it with "
+            "--private-token instead."
         )
-        client.auth()
     else:
         client = gitlab.Gitlab(args.host, ssl_verify=not args.disable_ssl_verification)
 
@@ -708,14 +701,11 @@ def get_client(args):
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Backup a gitlab account")
     parser.add_argument("--host", dest="host", help="gitlab host")
-    parser.add_argument("--username", dest="username", help="username for basic auth")
-    parser.add_argument(
-        "--password",
-        dest="password",
-        help="password for basic auth. "
-        "If a username is given but not a password, the "
-        "password will be prompted for.",
-    )
+    # Hidden rather than removed: GitLab dropped password authentication, but
+    # an existing invocation should get the actionable error from get_client
+    # instead of an "unrecognized arguments" failure
+    parser.add_argument("--username", dest="username", help=argparse.SUPPRESS)
+    parser.add_argument("--password", dest="password", help=argparse.SUPPRESS)
     parser.add_argument(
         "--oauth-token",
         dest="oauth_token",

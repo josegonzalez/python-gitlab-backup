@@ -70,38 +70,57 @@ class TestGetClientTokens:
 
 
 class TestGetClientBasicAuth:
-    def test_username_and_password_authenticates(self, create_args):
+    """GitLab removed password authentication from its API and python-gitlab
+    dropped the email=/password= arguments in 3.0, so these flags cannot work.
+    They fail with a pointer to --private-token rather than a TypeError from
+    deep inside the client library."""
+
+    def test_username_raises_an_actionable_error(self, create_args):
         args = create_args(host=HOST, username="someone", password="hunter2")
 
-        with patch("gitlab_backup.gitlab_backup.gitlab.Gitlab") as mock_gitlab:
-            client = get_client(args)
-
-        mock_gitlab.assert_called_once_with(
-            HOST, email="someone", password="hunter2", ssl_verify=True
-        )
-        client.auth.assert_called_once_with()
-
-    def test_missing_password_is_prompted_for(self, create_args):
-        args = create_args(host=HOST, username="someone", password=None)
-
-        with patch("gitlab_backup.gitlab_backup.gitlab.Gitlab") as mock_gitlab, patch(
-            "gitlab_backup.gitlab_backup.getpass.getpass", return_value="prompted"
-        ) as mock_getpass:
+        with pytest.raises(Exception) as exc_info:
             get_client(args)
 
-        mock_getpass.assert_called_once_with()
-        mock_gitlab.assert_called_once_with(
-            HOST, email="someone", password="prompted", ssl_verify=True
-        )
+        message = str(exc_info.value)
+        assert "no longer usable" in message
+        assert "--private-token" in message
 
-    def test_empty_prompted_password_raises(self, create_args):
+    def test_username_without_password_also_raises(self, create_args):
         args = create_args(host=HOST, username="someone", password=None)
 
-        with patch("gitlab_backup.gitlab_backup.getpass.getpass", return_value=""):
-            with pytest.raises(Exception) as exc_info:
-                get_client(args)
+        with pytest.raises(Exception) as exc_info:
+            get_client(args)
 
-        assert "You must specify a password for basic auth" in str(exc_info.value)
+        assert "--private-token" in str(exc_info.value)
+
+    def test_a_token_takes_precedence_over_username(self, create_args):
+        """A config carrying both keeps working through the token path."""
+        args = create_args(host=HOST, username="someone", private_token="glpat-secret")
+
+        with patch("gitlab_backup.gitlab_backup.gitlab.Gitlab") as mock_gitlab:
+            get_client(args)
+
+        mock_gitlab.assert_called_once_with(
+            HOST, private_token="glpat-secret", ssl_verify=True
+        )
+
+
+class TestRealClientSignature:
+    """The other tests mock gitlab.Gitlab, so a mock would happily accept any
+    keyword. This one constructs the real client to catch signature drift in
+    python-gitlab, which is how the email=/password= breakage went unnoticed."""
+
+    def test_supported_arguments_still_exist(self):
+        import gitlab
+
+        client = gitlab.Gitlab(HOST, private_token="glpat-secret", ssl_verify=True)
+        assert client is not None
+
+    def test_oauth_token_argument_still_exists(self):
+        import gitlab
+
+        client = gitlab.Gitlab(HOST, oauth_token="oauth-secret", ssl_verify=True)
+        assert client is not None
 
 
 class TestGetClientMisc:
