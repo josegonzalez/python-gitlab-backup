@@ -6,6 +6,7 @@ import getpass
 import logging
 import os
 import collections
+import shutil
 import subprocess
 import sys
 import threading
@@ -342,6 +343,91 @@ def check_git_lfs_install():
         )
 
 
+def looks_like_repository(local_dir):
+    """Whether a directory git refused to read still looks like a clone.
+
+    Distinguishes a half-written clone worth reporting as such from an
+    unrelated directory that merely occupies the path.
+    """
+    if os.path.exists(os.path.join(local_dir, ".git")):
+        return True
+
+    # A bare clone keeps these at the top level
+    return all(
+        os.path.exists(os.path.join(local_dir, marker))
+        for marker in ("HEAD", "objects")
+    )
+
+
+def check_existing_clone(local_dir, bare_clone, git_env=None):
+    """Whether local_dir holds a usable clone of the expected kind.
+
+    A run killed part way through a clone leaves a directory with a .git entry
+    that git cannot read. Left undetected it takes the update path on every
+    later run, failing forever on a repository that only needs re-cloning, so
+    ask git whether the directory is really a repository instead of trusting
+    the presence of .git.
+    """
+    if not os.path.exists(local_dir):
+        return False
+
+    try:
+        git_dir = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--absolute-git-dir"],
+                cwd=local_dir,
+                stderr=subprocess.DEVNULL,
+                env=git_env,
+            )
+            .decode("utf-8")
+            .strip()
+        )
+    except (subprocess.CalledProcessError, NotADirectoryError):
+        if looks_like_repository(local_dir):
+            raise GitCommandError(
+                "{0} looks like a repository but git cannot read it. A previous "
+                "run may have been interrupted; remove the directory to have it "
+                "cloned again".format(local_dir)
+            )
+        raise GitCommandError(
+            "{0} exists but is not a git repository".format(local_dir)
+        )
+
+    # git discovery walks up the directory tree, so an output directory nested
+    # inside an unrelated repository would otherwise look like our clone and we
+    # would rewrite that repository's origin and fetch over it. Only accept a
+    # git directory that is exactly where this clone should have put one.
+    # A clone of the wrong kind fails the same comparison and is treated as
+    # absent, matching the previous behaviour of re-cloning when --clone-bare
+    # is turned on afterwards.
+    expected = local_dir if bare_clone else os.path.join(local_dir, ".git")
+    return os.path.realpath(git_dir) == os.path.realpath(expected)
+
+
+def discard_partial_clone(local_dir, existed_before):
+    """Remove a directory left behind by a clone that was killed.
+
+    Returns whether the path is now clear, which is also the condition for
+    retrying the clone.
+    """
+    # lexists, not exists: a broken symlink still occupies the path but would
+    # otherwise look absent and the retry would fail on it
+    if existed_before:
+        return not os.path.lexists(local_dir)
+
+    if os.path.lexists(local_dir):
+        logger.warning("Removing partial clone at {0}".format(local_dir))
+        if os.path.isdir(local_dir) and not os.path.islink(local_dir):
+            shutil.rmtree(local_dir, ignore_errors=True)
+        else:
+            try:
+                os.unlink(local_dir)
+            except OSError:
+                pass
+
+    return not os.path.lexists(local_dir)
+
+
 def fetch_repository(
     args,
     name,
@@ -356,20 +442,7 @@ def fetch_repository(
     retries = getattr(args, "retries", 0)
     timeout = getattr(args, "git_timeout", 0) or None
 
-    if bare_clone:
-        if os.path.exists(local_dir):
-            clone_exists = (
-                subprocess.check_output(
-                    ["git", "rev-parse", "--is-bare-repository"],
-                    cwd=local_dir,
-                    env=git_env,
-                )
-                == b"true\n"
-            )
-        else:
-            clone_exists = False
-    else:
-        clone_exists = os.path.exists(os.path.join(local_dir, ".git"))
+    clone_exists = check_existing_clone(local_dir, bare_clone, git_env)
 
     if clone_exists and skip_existing:
         return
@@ -420,15 +493,20 @@ def fetch_repository(
             git_command = ["git", "clone", "--mirror", remote_url, local_dir]
         else:
             git_command = ["git", "clone", remote_url, local_dir]
-        # git removes a directory it created when a clone fails, so a retry is
-        # only safe while nothing occupies the path
-        run_git(
-            git_command,
-            env=git_env,
-            retries=retries,
-            retry_if=lambda: not os.path.exists(local_dir),
-            timeout=timeout,
-        )
+        # A clone killed by --git-timeout cannot clean up after itself, so
+        # remove what it left behind. Only ever a directory this run created.
+        existed_before = os.path.lexists(local_dir)
+        try:
+            run_git(
+                git_command,
+                env=git_env,
+                retries=retries,
+                retry_if=lambda: discard_partial_clone(local_dir, existed_before),
+                timeout=timeout,
+            )
+        except GitCommandError:
+            discard_partial_clone(local_dir, existed_before)
+            raise
 
     # LFS objects are fetched in addition to the refs above, never instead of
     # them, otherwise a --clone-lfs backup would stop receiving new commits

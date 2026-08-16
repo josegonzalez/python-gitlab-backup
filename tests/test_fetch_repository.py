@@ -1,5 +1,7 @@
 """Tests for fetch_repository clone and update flows."""
 
+import os
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -21,14 +23,31 @@ def git(tmp_path):
         def __init__(self):
             self.local_dir = str(tmp_path / "repository")
             self.ls_remote_rc = 0
-            self.is_bare = b"true\n"
+            # What `git rev-parse --absolute-git-dir` reports from local_dir
+            self.git_dir = os.path.join(self.local_dir, ".git")
             self.remotes = b"origin\n"
+            # What `git remote get-url origin` reports
+            self.origin_url = REMOTE_URL
             self.rc_by_subcommand = {}
 
         def _check_output(self, popenargs, **kwargs):
             if "rev-parse" in popenargs:
-                return self.is_bare
+                if isinstance(self.git_dir, Exception):
+                    raise self.git_dir
+                return self.git_dir.encode("utf-8") + b"\n"
+            if "get-url" in popenargs:
+                if isinstance(self.origin_url, Exception):
+                    raise self.origin_url
+                return self.origin_url.encode("utf-8") + b"\n"
+            if isinstance(self.remotes, Exception):
+                raise self.remotes
             return self.remotes
+
+        def _logging_subprocess(self, popenargs, **kwargs):
+            for subcommand, rc in self.rc_by_subcommand.items():
+                if subcommand in popenargs:
+                    return rc
+            return 0
 
         @property
         def commands(self):
@@ -46,12 +65,10 @@ def git(tmp_path):
                 (tmp_path / "repository").mkdir(parents=True, exist_ok=True)
             else:
                 (tmp_path / "repository" / ".git").mkdir(parents=True, exist_ok=True)
-
-        def _logging_subprocess(self, popenargs, **kwargs):
-            for subcommand, rc in self.rc_by_subcommand.items():
-                if subcommand in popenargs:
-                    return rc
-            return 0
+            # git rev-parse is what decides, not the presence of .git
+            self.git_dir = (
+                self.local_dir if bare else os.path.join(self.local_dir, ".git")
+            )
 
     helper = Git()
     with patch("gitlab_backup.gitlab_backup.time.sleep"), patch(
@@ -294,7 +311,7 @@ class TestExistingClone:
         """A directory that is not a bare repo is treated as no clone at all."""
         args = create_args()
         git.make_clone(bare=True)
-        git.is_bare = b"false\n"
+        git.git_dir = os.path.join(git.local_dir, ".git")
 
         fetch_repository(
             args, "group/project", REMOTE_URL, git.local_dir, bare_clone=True
@@ -309,6 +326,153 @@ class TestExistingClone:
 
         with pytest.raises(GitCommandError):
             fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+
+class TestCorruptClone:
+    """A run killed part way through a clone leaves a directory with a .git
+    entry that git cannot read. It used to take the update path forever after,
+    failing on every subsequent run with a confusing error."""
+
+    def test_unreadable_clone_is_reported_as_interrupted(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+        git.git_dir = subprocess.CalledProcessError(128, "git")
+
+        with pytest.raises(GitCommandError) as exc_info:
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        message = str(exc_info.value)
+        assert "git cannot read it" in message
+        assert "may have been interrupted" in message
+        assert git.commands == []
+
+    def test_unreadable_bare_clone_is_reported_as_interrupted(
+        self, create_args, git, tmp_path
+    ):
+        args = create_args()
+        git.make_clone(bare=True)
+        (tmp_path / "repository" / "HEAD").write_text("ref: refs/heads/main\n")
+        (tmp_path / "repository" / "objects").mkdir(exist_ok=True)
+        git.git_dir = subprocess.CalledProcessError(128, "git")
+
+        with pytest.raises(GitCommandError) as exc_info:
+            fetch_repository(
+                args, "group/project", REMOTE_URL, git.local_dir, bare_clone=True
+            )
+
+        assert "may have been interrupted" in str(exc_info.value)
+
+    def test_a_bare_clone_is_not_used_as_a_working_clone(self, create_args, git):
+        """Switching --clone-bare off re-clones instead of fetching into it."""
+        args = create_args()
+        git.make_clone(bare=True)
+
+        fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert git.commands == [["git", "clone", REMOTE_URL, git.local_dir]]
+
+
+class TestPartialCloneCleanup:
+    """A clone killed by --git-timeout cannot clean up after itself, so the
+    leftover directory would fail every later run until a human removed it."""
+
+    def test_a_failed_clone_leaves_no_directory_behind(self, create_args, git):
+        args = create_args(retries=0)
+        git.rc_by_subcommand = {"clone": 1}
+
+        def clone_then_litter(popenargs, **kwargs):
+            if "clone" in popenargs:
+                os.makedirs(git.local_dir, exist_ok=True)
+                return 1
+            return 0
+
+        git.logging_subprocess.side_effect = clone_then_litter
+
+        with pytest.raises(GitCommandError):
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert not os.path.exists(git.local_dir)
+
+    def test_a_pre_existing_directory_is_never_removed(self, create_args, git):
+        """Only a directory this run created may be discarded."""
+        args = create_args(retries=0)
+        os.makedirs(git.local_dir, exist_ok=True)
+        marker = os.path.join(git.local_dir, "keep-me.txt")
+        open(marker, "w").write("important")
+        git.git_dir = subprocess.CalledProcessError(128, "git")
+
+        with pytest.raises(GitCommandError):
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert os.path.exists(marker)
+
+
+class TestPartialCloneSymlinks:
+    """os.path.exists follows symlinks, so a broken link left at the target
+    looked absent while still occupying the path."""
+
+    def test_a_broken_symlink_is_removed(self, create_args, git, tmp_path):
+        args = create_args(retries=0)
+
+        def clone_then_litter(popenargs, **kwargs):
+            if "clone" in popenargs:
+                os.symlink(str(tmp_path / "nowhere"), git.local_dir)
+                return 1
+            return 0
+
+        git.logging_subprocess.side_effect = clone_then_litter
+
+        with pytest.raises(GitCommandError):
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert not os.path.lexists(git.local_dir)
+
+    def test_a_pre_existing_symlink_is_left_alone(self, create_args, git, tmp_path):
+        os.symlink(str(tmp_path / "nowhere"), git.local_dir)
+        args = create_args(retries=0)
+        git.rc_by_subcommand = {"clone": 1}
+
+        with pytest.raises(GitCommandError):
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert os.path.islink(git.local_dir)
+
+
+class TestEnclosingRepository:
+    """git discovery walks up the directory tree. An output directory nested
+    inside an unrelated repository must not be mistaken for our clone: doing so
+    rewrote that repository's origin and fetched over it with --force --prune."""
+
+    def test_parent_repository_is_not_treated_as_our_clone(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+        # rev-parse resolves to an enclosing repository, not our target
+        git.git_dir = "/somewhere/else/parent/.git"
+
+        fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert git.commands == [["git", "clone", REMOTE_URL, git.local_dir]]
+        assert git.command_containing("remote") is None
+        assert git.command_containing("fetch") is None
+
+    def test_parent_repository_is_not_treated_as_our_bare_clone(self, create_args, git):
+        args = create_args()
+        git.make_clone(bare=True)
+        git.git_dir = "/somewhere/else/parent/.git"
+
+        fetch_repository(
+            args, "group/project", REMOTE_URL, git.local_dir, bare_clone=True
+        )
+
+        assert git.command_containing("remote") is None
+
+    def test_our_own_clone_is_still_recognised(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+
+        fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert git.command_containing("fetch") is not None
 
 
 class TestRetries:
