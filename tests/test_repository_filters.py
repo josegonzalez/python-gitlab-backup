@@ -9,6 +9,8 @@ from gitlab_backup.gitlab_backup import (
     get_git_env,
     get_repo_url,
     read_token,
+    remote_host,
+    remote_repo_path,
     should_include_repository,
 )
 
@@ -237,6 +239,65 @@ class TestStallDetection:
         ]
 
         assert keys == ["http.extraHeader", "http.lowSpeedLimit", "http.lowSpeedTime"]
+
+
+class TestRemoteIdentity:
+    """A remote URL is reduced to host plus project path so the same project
+    is recognised across transports, and a different one never is."""
+
+    @pytest.mark.parametrize(
+        "url,host,path",
+        [
+            ("https://gitlab.com/g/p.git", "gitlab.com", "g/p"),
+            ("git@gitlab.com:g/p.git", "gitlab.com", "g/p"),
+            ("ssh://git@GitLab.COM:22/g/p.git", "gitlab.com", "g/p"),
+            ("https://user:pw@self.hosted:8443/g/p.git", "self.hosted", "g/p"),
+            ("https://gitlab.com/g/sub/p", "gitlab.com", "g/sub/p"),
+        ],
+    )
+    def test_urls_reduce_to_host_and_path(self, url, host, path):
+        assert remote_host(url) == host
+        assert remote_repo_path(url) == path
+
+    def test_a_local_path_has_no_host(self):
+        assert remote_host("/srv/mirrors/p.git") == ""
+        assert remote_repo_path("/srv/mirrors/p.git") == "srv/mirrors/p"
+
+    def test_empty_input(self):
+        assert remote_host("") == ""
+        assert remote_repo_path("") == ""
+
+    def test_case_differences_in_the_path_are_preserved(self):
+        """Path case must survive: it is what distinguishes the two projects."""
+        assert remote_repo_path("https://h/G/P.git") != remote_repo_path(
+            "https://h/g/p.git"
+        )
+
+
+class TestRemoteHostLocalPaths:
+    """A local path is not a host. git applies the same drive-letter rule."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "C:\\backups\\repo.git",
+            "D:/backups/repo.git",
+            "/srv/mirrors/repo.git",
+            "./relative/repo.git",
+            "../up/repo.git",
+        ],
+    )
+    def test_local_paths_have_no_host(self, path):
+        assert remote_host(path) == ""
+
+    def test_a_real_host_is_still_recognised(self):
+        assert remote_host("gitlab.example.com:group/project.git") == (
+            "gitlab.example.com"
+        )
+
+    def test_a_single_letter_host_over_ssh_is_still_a_host(self):
+        """Only the bare scp-like form is ambiguous; a scheme removes the doubt."""
+        assert remote_host("ssh://git@c/group/project.git") == "c"
 
 
 if __name__ == "__main__":

@@ -573,5 +573,131 @@ class TestProbeRetries:
         assert git.probe.call_args.kwargs["retries"] == 4
 
 
+class TestWrongRepositoryInPlace:
+    """On a case-insensitive filesystem Group/Project and group/project resolve
+    to one directory. Fetching the second over the first would merge two
+    unrelated repositories into a single backup."""
+
+    def test_a_different_project_is_refused(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+        git.origin_url = "https://gitlab.example.com/group/OtherProject.git"
+
+        with pytest.raises(GitCommandError) as exc_info:
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        message = str(exc_info.value)
+        assert "refusing to overwrite" in message
+        assert "capitalisation" in message
+        assert git.command_containing("fetch") is None
+
+    def test_a_case_variant_is_refused(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+        git.origin_url = "https://gitlab.example.com/Group/Project.git"
+
+        with pytest.raises(GitCommandError):
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+    def test_switching_to_ssh_is_allowed(self, create_args, git):
+        """Same project, different transport, must still update."""
+        args = create_args(prefer_ssh=True)
+        git.make_clone()
+        git.origin_url = "https://gitlab.example.com/group/project.git"
+        ssh_url = "git@gitlab.example.com:group/project.git"
+
+        fetch_repository(args, "group/project", ssh_url, git.local_dir)
+
+        assert git.command_containing("set-url") == [
+            "git",
+            "remote",
+            "set-url",
+            "origin",
+            ssh_url,
+        ]
+
+    def test_a_missing_origin_is_not_checked(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+        git.remotes = b"upstream\n"
+
+        fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert git.command_containing("add") is not None
+
+    def test_unreadable_remote_list_is_wrapped(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+        git.remotes = subprocess.CalledProcessError(128, "git")
+
+        with pytest.raises(GitCommandError) as exc_info:
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert "Could not list the remotes" in str(exc_info.value)
+
+
+class TestDifferentHost:
+    """Two instances can both hold group/project. Backing both up into one
+    output directory would merge them, so the host is compared too."""
+
+    OTHER_HOST = "https://gitlab.other.example.com/group/project.git"
+
+    def test_a_different_host_is_refused(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+        git.origin_url = self.OTHER_HOST
+
+        with pytest.raises(GitCommandError) as exc_info:
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        message = str(exc_info.value)
+        assert "same project path exists on both hosts" in message
+        assert "--allow-host-change" in message
+        assert git.command_containing("fetch") is None
+
+    def test_allow_host_change_permits_it(self, create_args, git):
+        """For a genuine instance rename."""
+        args = create_args(allow_host_change=True)
+        git.make_clone()
+        git.origin_url = self.OTHER_HOST
+
+        fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert git.command_containing("set-url") is not None
+        assert git.command_containing("fetch") is not None
+
+    def test_switching_transport_on_one_host_is_still_allowed(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+        git.origin_url = "https://gitlab.example.com/group/project.git"
+        ssh_url = "git@gitlab.example.com:group/project.git"
+
+        fetch_repository(args, "group/project", ssh_url, git.local_dir)
+
+        assert git.command_containing("fetch") is not None
+
+    def test_host_comparison_ignores_case(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+        git.origin_url = "https://GitLab.Example.COM/group/project.git"
+
+        fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert git.command_containing("fetch") is not None
+
+    def test_a_wrong_project_is_refused_even_with_allow_host_change(
+        self, create_args, git
+    ):
+        """The escape hatch covers a renamed host, not a different project."""
+        args = create_args(allow_host_change=True)
+        git.make_clone()
+        git.origin_url = "https://gitlab.example.com/group/OtherProject.git"
+
+        with pytest.raises(GitCommandError) as exc_info:
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert "capitalisation" in str(exc_info.value)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

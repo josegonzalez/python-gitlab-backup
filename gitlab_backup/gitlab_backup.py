@@ -40,6 +40,45 @@ class GitCommandError(Exception):
     """Raised when a git subprocess exits non-zero."""
 
 
+def remote_host(url):
+    """The host a remote URL points at, or "" for a local path.
+
+    Hosts are compared case-insensitively because DNS is.
+    """
+    if not url:
+        return ""
+
+    if "://" in url:
+        return (urlparse(url).hostname or "").lower()
+
+    # scp-like syntax: [user@]host:path
+    head, sep, _tail = url.partition(":")
+    if not sep or os.path.sep in head or "\\" in head:
+        return ""
+    # A lone letter before the colon is a Windows drive, not a host, which is
+    # the same rule git itself applies
+    if len(head) == 1 and head.isalpha():
+        return ""
+    return head.rpartition("@")[2].lower()
+
+
+def remote_repo_path(url):
+    """The project path a remote URL points at, ignoring transport and suffix.
+
+    https://host/group/project.git and git@host:group/project both reduce to
+    group/project, so switching --prefer-ssh is recognised as the same
+    repository while a genuinely different project is not.
+    """
+    if not url:
+        return ""
+
+    path = urlparse(url).path if "://" in url else url.rpartition(":")[2]
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    return path
+
+
 def mask_command(popenargs):
     """Redact credentials from a command line before it is displayed.
 
@@ -428,6 +467,54 @@ def discard_partial_clone(local_dir, existed_before):
     return not os.path.lexists(local_dir)
 
 
+def assert_same_repository(
+    local_dir, remote_url, git_env=None, allow_host_change=False
+):
+    """Refuse to fetch one project into another project's directory.
+
+    On a case-insensitive filesystem Group/Project and group/project resolve to
+    the same path, so the second would rewrite the first's origin and pull a
+    different repository's refs over it.
+
+    The host is compared too, since two instances can both hold group/project.
+    Switching between https and ssh on one host stays allowed; a genuine
+    instance rename needs --allow-host-change.
+    """
+    try:
+        current = (
+            subprocess.check_output(
+                ["git", "remote", "get-url", "origin"],
+                cwd=local_dir,
+                stderr=subprocess.DEVNULL,
+                env=git_env,
+            )
+            .decode("utf-8")
+            .strip()
+        )
+    except subprocess.CalledProcessError:
+        return
+
+    if remote_repo_path(current) != remote_repo_path(remote_url):
+        raise GitCommandError(
+            "{0} already holds {1}, refusing to overwrite it with {2}. Two "
+            "projects whose paths differ only in capitalisation share one "
+            "directory on this filesystem; back them up to separate "
+            "--output-directory paths".format(
+                local_dir, mask_password(current), mask_password(remote_url)
+            )
+        )
+
+    if not allow_host_change and remote_host(current) != remote_host(remote_url):
+        raise GitCommandError(
+            "{0} already holds {1}, refusing to overwrite it with {2}. The same "
+            "project path exists on both hosts; back the two instances up to "
+            "separate --output-directory paths, or pass --allow-host-change if "
+            "the instance was renamed".format(
+                local_dir, mask_password(current), mask_password(remote_url)
+            )
+        )
+
+
 def fetch_repository(
     args,
     name,
@@ -464,15 +551,27 @@ def fetch_repository(
     if clone_exists:
         logger.info("Updating {0} in {1}".format(name, local_dir))
 
-        remotes = subprocess.check_output(
-            ["git", "remote", "show"], cwd=local_dir, env=git_env
-        )
+        try:
+            remotes = subprocess.check_output(
+                ["git", "remote", "show"], cwd=local_dir, env=git_env
+            )
+        except subprocess.CalledProcessError as e:
+            raise GitCommandError(
+                "Could not list the remotes of {0}: git remote show exited "
+                "with code {1}".format(local_dir, e.returncode)
+            )
         remotes = [i.strip() for i in remotes.decode("utf-8").splitlines()]
 
         if "origin" not in remotes:
             git_command = ["git", "remote", "add", "origin", remote_url]
             run_git(git_command, cwd=local_dir, env=git_env, timeout=timeout)
         else:
+            assert_same_repository(
+                local_dir,
+                remote_url,
+                git_env,
+                allow_host_change=getattr(args, "allow_host_change", False),
+            )
             git_command = ["git", "remote", "set-url", "origin", remote_url]
             run_git(git_command, cwd=local_dir, env=git_env, timeout=timeout)
 
@@ -680,6 +779,13 @@ def parse_args(args=None):
         action="store_true",
         dest="quiet",
         help="only log warnings and errors",
+    )
+    parser.add_argument(
+        "--allow-host-change",
+        action="store_true",
+        dest="allow_host_change",
+        help="permit an existing clone's origin to move to a different host, "
+        "for when the gitlab instance was renamed",
     )
     parser.add_argument(
         "--git-timeout",

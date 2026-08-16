@@ -5,6 +5,7 @@ import collections
 import logging
 import os
 import sys
+import tempfile
 
 from gitlab_backup.gitlab_backup import (
     backup_repository,
@@ -13,6 +14,7 @@ from gitlab_backup.gitlab_backup import (
     logger,
     mkdir_p,
     parse_args,
+    should_include_repository,
 )
 
 # INFO and DEBUG go to stdout, WARNING and above go to stderr
@@ -31,6 +33,42 @@ stderr_handler.setLevel(logging.WARNING)
 stderr_handler.setFormatter(log_format)
 
 logging.basicConfig(level=logging.INFO, handlers=[stdout_handler, stderr_handler])
+
+
+def filesystem_is_case_insensitive(path):
+    """Whether two names differing only in case are one file here.
+
+    Probed rather than assumed: on ext4 two projects whose paths differ only in
+    capitalisation are distinct directories and both back up correctly, so the
+    collision check must not fire there.
+    """
+    try:
+        handle, probe = tempfile.mkstemp(prefix="GitlabBackupCaseProbe", dir=path)
+        os.close(handle)
+    except OSError:
+        # Cannot tell, so assume the riskier filesystem
+        return True
+
+    try:
+        directory, name = os.path.split(probe)
+        return name != name.lower() and os.path.exists(
+            os.path.join(directory, name.lower())
+        )
+    finally:
+        try:
+            os.unlink(probe)
+        except OSError:
+            # A scanner or indexer holding the probe must not fail the backup
+            logger.debug("Could not remove case probe {0}".format(probe))
+
+
+def find_colliding_paths(repositories):
+    """Group project paths that differ only in capitalisation."""
+    by_folded = collections.OrderedDict()
+    for path in repositories:
+        by_folded.setdefault(path.casefold(), []).append(path)
+
+    return [sorted(group) for group in by_folded.values() if len(group) > 1]
 
 
 def main():
@@ -67,15 +105,48 @@ def main():
         get_all=True, owned=args.owned_only, membership=args.with_membership
     )
     repositories = {}
+    unreadable = []
     for item in items:
-        repositories[item.path_with_namespace] = item
+        # Filter before checking for collisions, so projects this run is not
+        # backing up cannot fail it
+        path = getattr(item, "path_with_namespace", None)
+        if not path or not isinstance(path, str):
+            logger.error("Skipping a project with no usable path: {0!r}".format(path))
+            unreadable.append("<project with no path>")
+            continue
+
+        try:
+            if not should_include_repository(args, item.attributes):
+                continue
+        except Exception as e:
+            # One unexpected project must cost only itself, not the backup
+            logger.error("Could not read project {0}: {1}".format(path or item, e))
+            unreadable.append(path or str(item))
+            continue
+        repositories[path] = item
 
     repositories = collections.OrderedDict(sorted(repositories.items()))
 
     # One unreachable or broken repository must not cost you the other 200,
     # but it still has to make the run exit non-zero
-    failed = []
+    # Two projects whose paths differ only in capitalisation share a directory
+    # on a case-insensitive filesystem. Report them instead of letting the
+    # second quietly fetch over the first.
+    colliding = (
+        find_colliding_paths(repositories)
+        if filesystem_is_case_insensitive(output_directory)
+        else []
+    )
+    for group in colliding:
+        logger.error(
+            "These projects share one directory on a case-insensitive "
+            "filesystem and cannot both be backed up here: {0}".format(", ".join(group))
+        )
+
+    failed = unreadable + [path for group in colliding for path in group]
     for path, item in repositories.items():
+        if path in failed:
+            continue
         try:
             backup_repository(args, item)
         except Exception as e:
@@ -85,7 +156,7 @@ def main():
     if failed:
         raise Exception(
             "{0} of {1} repositories failed to back up: {2}".format(
-                len(failed), len(repositories), ", ".join(failed)
+                len(failed), len(repositories) + len(unreadable), ", ".join(failed)
             )
         )
 
