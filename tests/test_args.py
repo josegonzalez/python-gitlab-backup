@@ -109,5 +109,22 @@ class TestNumericFlagValidation:
         assert args.retries == 3
 
 
+class TestScopeFlagsAreExclusive:
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            ["--owned-only", "--with-membership"],
+            ["--owned-only", "--all-visible"],
+            ["--with-membership", "--all-visible"],
+        ],
+    )
+    def test_conflicting_scopes_are_rejected(self, flags):
+        with pytest.raises(SystemExit):
+            parse_args(flags)
+
+    def test_all_visible_defaults_to_false(self):
+        assert parse_args([]).all_visible is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

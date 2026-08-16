@@ -778,17 +778,26 @@ def parse_args(args=None):
         dest="skip_existing",
         help="skip project if a backup directory exists",
     )
-    parser.add_argument(
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument(
         "--owned-only",
         action="store_true",
         dest="owned_only",
-        help="Only backup projects owned by the provided user or key",
+        help="only backup projects owned by the provided user or key",
     )
-    parser.add_argument(
+    scope.add_argument(
         "--with-membership",
         action="store_true",
         dest="with_membership",
-        help="Backup projects provided user or key is member of",
+        help="backup projects the provided user or key is a member of " "(the default)",
+    )
+    scope.add_argument(
+        "--all-visible",
+        action="store_true",
+        dest="all_visible",
+        help="backup every project the token can see, including public ones "
+        "it is not a member of. On a large instance such as gitlab.com this "
+        "enumerates millions of projects and will not finish",
     )
     parser.add_argument(
         "--private_key", default="", dest="private_key", help="Path to the private key"

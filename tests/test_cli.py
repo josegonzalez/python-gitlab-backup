@@ -483,5 +483,63 @@ class TestCaseProbeRobustness:
         assert cli.filesystem_is_case_insensitive(str(tmp_path)) in (True, False)
 
 
+class TestListingScope:
+    """Asking gitlab for every visible project means every public project on
+    the instance. On gitlab.com that is millions and never finishes, so the
+    default is the projects the user actually belongs to."""
+
+    @staticmethod
+    def _recording_client(record):
+        def list_projects(*_args, **kwargs):
+            record.update(kwargs)
+            return []
+
+        return type("C", (), {"projects": type("L", (), {"list": list_projects})()})()
+
+    def _scope_for(self, create_args, tmp_path, **flags):
+        record = {}
+        args = create_args(output_directory=str(tmp_path), **flags)
+
+        with patch.object(cli, "parse_args", return_value=args), patch.object(
+            cli, "get_client", return_value=self._recording_client(record)
+        ):
+            cli.main()
+
+        return record
+
+    def test_default_is_membership(self, create_args, tmp_path):
+        scope = self._scope_for(create_args, tmp_path)
+
+        assert scope["membership"] is True
+        assert scope["owned"] is False
+
+    def test_owned_only_narrows_it(self, create_args, tmp_path):
+        scope = self._scope_for(create_args, tmp_path, owned_only=True)
+
+        assert scope["owned"] is True
+        assert scope["membership"] is False
+
+    def test_with_membership_is_the_default_made_explicit(self, create_args, tmp_path):
+        scope = self._scope_for(create_args, tmp_path, with_membership=True)
+
+        assert scope["membership"] is True
+        assert scope["owned"] is False
+
+    def test_all_visible_restores_the_unfiltered_query(self, create_args, tmp_path):
+        scope = self._scope_for(create_args, tmp_path, all_visible=True)
+
+        assert scope["owned"] is False
+        assert scope["membership"] is False
+
+    def test_get_all_is_always_requested(self, create_args, tmp_path):
+        assert self._scope_for(create_args, tmp_path)["get_all"] is True
+
+    def test_the_scope_is_logged(self, create_args, tmp_path, caplog):
+        with caplog.at_level(logging.INFO, logger="gitlab_backup.gitlab_backup"):
+            self._scope_for(create_args, tmp_path)
+
+        assert "member of" in caplog.text
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

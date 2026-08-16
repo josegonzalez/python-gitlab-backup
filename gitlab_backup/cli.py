@@ -104,9 +104,22 @@ def main():
         logger.info("Create output directory {0}".format(output_directory))
         mkdir_p(output_directory)
 
-    items = client.projects.list(
-        get_all=True, owned=args.owned_only, membership=args.with_membership
-    )
+    # Default to the projects the user is a member of. Asking for everything
+    # the token can see means every public project on the instance, which on
+    # gitlab.com is millions and looks indistinguishable from a hang.
+    owned = args.owned_only
+    membership = args.with_membership
+    if not (owned or membership or args.all_visible):
+        membership = True
+
+    if args.all_visible:
+        logger.info("Listing every project visible to this token")
+    elif owned:
+        logger.info("Listing projects owned by this user")
+    else:
+        logger.info("Listing projects this user is a member of")
+
+    items = client.projects.list(get_all=True, owned=owned, membership=membership)
     repositories = {}
     unreadable = []
     for item in items:
