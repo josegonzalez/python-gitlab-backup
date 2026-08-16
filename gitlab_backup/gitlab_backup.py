@@ -126,6 +126,20 @@ def get_git_extra_args(args):
     return []
 
 
+def check_git_lfs_install():
+    exit_code = subprocess.call(
+        ["git", "lfs", "version"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if exit_code != 0:
+        raise Exception(
+            "The argument --clone-lfs requires you to have Git LFS installed.\n"
+            "You can get it from https://git-lfs.github.com."
+        )
+
+
 def fetch_repository(
     args,
     name,
@@ -182,26 +196,9 @@ def fetch_repository(
             )
             run_git(git_command, cwd=local_dir)
 
-        if lfs_clone:
-            git_command = (
-                [
-                    "git",
-                ]
-                + extra_args
-                + [
-                    "lfs",
-                    "fetch",
-                    "--all",
-                    "--prune",
-                ]
-            )
-        else:
-            git_command = (
-                ["git"]
-                + extra_args
-                + ["fetch", "--all", "--force", "--tags", "--prune"]
-            )
-        run_git(git_command, cwd=local_dir)
+        run_git(
+            ["git", "fetch", "--all", "--force", "--tags", "--prune"], cwd=local_dir
+        )
     else:
         logger.info(
             "Cloning {0} repository from {1} to {2}".format(
@@ -215,6 +212,11 @@ def fetch_repository(
         else:
             git_command = ["git"] + extra_args + ["clone", remote_url, local_dir]
         run_git(git_command)
+
+    # LFS objects are fetched in addition to the refs above, never instead of
+    # them, otherwise a --clone-lfs backup would stop receiving new commits
+    if lfs_clone:
+        run_git(["git", "lfs", "fetch", "--all", "--prune"], cwd=local_dir)
 
 
 def backup_repository(args, item):

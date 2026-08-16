@@ -87,15 +87,18 @@ class TestFreshClone:
 
         assert git.commands == [["git", "clone", "--mirror", REMOTE_URL, git.local_dir]]
 
-    def test_lfs_clone_still_performs_a_plain_first_clone(self, create_args, git):
-        """A first clone is always plain; LFS objects arrive on the next update."""
+    def test_lfs_objects_are_fetched_after_a_first_clone(self, create_args, git):
+        """Without this, LFS content is missing until the next run."""
         args = create_args()
 
         fetch_repository(
             args, "group/project", REMOTE_URL, git.local_dir, lfs_clone=True
         )
 
-        assert git.commands == [["git", "clone", REMOTE_URL, git.local_dir]]
+        assert git.commands == [
+            ["git", "clone", REMOTE_URL, git.local_dir],
+            ["git", "lfs", "fetch", "--all", "--prune"],
+        ]
 
     def test_auth_args_are_prepended_to_git(self, create_args, git):
         args = create_args(private_token="glpat-secret")
@@ -188,7 +191,9 @@ class TestExistingClone:
             "--prune",
         ]
 
-    def test_lfs_clone_fetches_lfs_objects(self, create_args, git):
+    def test_lfs_clone_still_fetches_refs(self, create_args, git):
+        """Regression: --clone-lfs used to replace the ref fetch entirely, so
+        backups stopped receiving new commits after the first clone."""
         args = create_args()
         git.make_clone()
 
@@ -196,6 +201,7 @@ class TestExistingClone:
             args, "group/project", REMOTE_URL, git.local_dir, lfs_clone=True
         )
 
+        assert git.command_containing("fetch", "--tags") is not None
         assert git.command_containing("lfs") == [
             "git",
             "lfs",
@@ -203,7 +209,17 @@ class TestExistingClone:
             "--all",
             "--prune",
         ]
-        assert git.command_containing("fetch", "--tags") is None
+
+    def test_refs_are_fetched_before_lfs_objects(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+
+        fetch_repository(
+            args, "group/project", REMOTE_URL, git.local_dir, lfs_clone=True
+        )
+
+        subcommands = [c[1] for c in git.commands]
+        assert subcommands.index("fetch") < subcommands.index("lfs")
 
     def test_existing_origin_is_updated(self, create_args, git):
         args = create_args()

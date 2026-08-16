@@ -8,6 +8,7 @@ import sys
 
 from gitlab_backup.gitlab_backup import (
     backup_repository,
+    check_git_lfs_install,
     get_client,
     logger,
     mkdir_p,
@@ -43,6 +44,9 @@ def main():
         log_level = logging.getLevelName(args.log_level.upper())
         if isinstance(log_level, int):
             logger.root.setLevel(log_level)
+
+    if args.clone_lfs:
+        check_git_lfs_install()
 
     if args.private_key != "":
         logger.info("Use the private key: {0}".format(args.private_key))

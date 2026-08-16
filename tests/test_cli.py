@@ -170,5 +170,29 @@ class TestFailureIsolation:
         assert exc_info.value.code == 1
 
 
+class TestLfsPreflight:
+    def test_clone_lfs_checks_for_git_lfs(self, create_args, tmp_path):
+        args = create_args(output_directory=str(tmp_path), clone_lfs=True)
+
+        with patch.object(cli, "parse_args", return_value=args), patch.object(
+            cli, "check_git_lfs_install", side_effect=Exception("no git lfs")
+        ) as mock_check:
+            with pytest.raises(Exception) as exc_info:
+                cli.main()
+
+        mock_check.assert_called_once_with()
+        assert "no git lfs" in str(exc_info.value)
+
+    def test_no_check_without_the_flag(self, create_args, tmp_path):
+        args = create_args(output_directory=str(tmp_path))
+
+        with patch.object(cli, "parse_args", return_value=args), patch.object(
+            cli, "get_client", return_value=client()
+        ), patch.object(cli, "check_git_lfs_install") as mock_check:
+            cli.main()
+
+        mock_check.assert_not_called()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
