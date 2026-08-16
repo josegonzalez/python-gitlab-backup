@@ -360,6 +360,23 @@ class TestCollisionsRespectTheNamespaceFilter:
         assert "2 of 2 repositories failed" in str(exc_info.value)
 
 
+class TestNamespaceCoversSubgroups:
+    def test_subgroups_are_still_included(self, create_args, tmp_path):
+        args = create_args(output_directory=str(tmp_path), namespace="wanted")
+        attempted = []
+
+        with patch.object(cli, "parse_args", return_value=args), patch.object(
+            cli, "get_client", return_value=client("wanted/sub/deep", "other/x")
+        ), patch.object(
+            cli,
+            "backup_repository",
+            side_effect=lambda a, i: attempted.append(i.path_with_namespace),
+        ):
+            cli.main()
+
+        assert attempted == ["wanted/sub/deep"]
+
+
 class TestUnreadableProjects:
     """A project the filter cannot evaluate must cost only itself. It used to
     raise KeyError out of the loop and abort the whole run."""

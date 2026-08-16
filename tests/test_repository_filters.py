@@ -40,13 +40,28 @@ class TestShouldIncludeRepository:
 
         assert should_include_repository(args, attributes(full_path="group")) is False
 
-    def test_subgroup_namespace_matches_full_path(self, create_args):
-        """The filter compares the full path, so a parent group does not match."""
+    def test_subgroups_are_included(self, create_args):
+        """A namespace covers everything nested beneath it."""
         args = create_args(namespace="group")
 
         assert (
             should_include_repository(args, attributes(full_path="group/subgroup"))
-            is False
+            is True
+        )
+
+    def test_deeply_nested_subgroups_are_included(self, create_args):
+        args = create_args(namespace="group")
+
+        assert (
+            should_include_repository(args, attributes(full_path="group/a/b/c")) is True
+        )
+
+    def test_namespace_matches_on_a_path_boundary(self, create_args):
+        """--namespace group must not sweep in a sibling called groupother."""
+        args = create_args(namespace="group")
+
+        assert (
+            should_include_repository(args, attributes(full_path="groupother")) is False
         )
 
     def test_exclusion_is_logged_at_debug(self, create_args, caplog):

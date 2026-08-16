@@ -256,15 +256,24 @@ def read_token(value):
 
 
 def should_include_repository(args, attributes):
+    """Whether a project falls under the requested --namespace.
+
+    A namespace covers its subgroups, so --namespace group also backs up
+    group/subgroup/project.
+    """
+    if not args.namespace:
+        return True
+
     full_path = attributes["namespace"]["full_path"]
-    if args.namespace and args.namespace != full_path:
-        logger.debug(
-            "Skipping {0} as namespace does not match {1}".format(
-                attributes["path_with_namespace"], args.namespace
-            )
+    if full_path == args.namespace or full_path.startswith(args.namespace + "/"):
+        return True
+
+    logger.debug(
+        "Skipping {0} as namespace does not match {1}".format(
+            attributes["path_with_namespace"], args.namespace
         )
-        return False
-    return True
+    )
+    return False
 
 
 def get_git_env(args):
@@ -739,7 +748,7 @@ def parse_args(args=None):
         "--namespace",
         default=None,
         dest="namespace",
-        help="specify a gitlab namespace to backup",
+        help="specify a gitlab namespace to backup, including its subgroups",
     )
     parser.add_argument(
         "--output-directory",
