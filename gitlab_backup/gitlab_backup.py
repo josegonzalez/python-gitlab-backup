@@ -376,13 +376,33 @@ def non_negative_int(value):
     return parsed
 
 
+def check_git_install():
+    try:
+        exit_code = subprocess.call(
+            ["git", "version"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        exit_code = 1
+    if exit_code != 0:
+        raise Exception(
+            "git was not found on PATH. gitlab-backup shells out to git 2.31+ "
+            "to clone and update repositories; install it and try again."
+        )
+
+
 def check_git_lfs_install():
-    exit_code = subprocess.call(
-        ["git", "lfs", "version"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        exit_code = subprocess.call(
+            ["git", "lfs", "version"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        exit_code = 1
     if exit_code != 0:
         raise Exception(
             "The argument --clone-lfs requires you to have Git LFS installed.\n"

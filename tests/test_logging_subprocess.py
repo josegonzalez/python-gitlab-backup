@@ -306,5 +306,35 @@ class TestProbeRemote:
         assert "exceeded the 1s timeout" in caplog.text
 
 
+class TestToolChecks:
+    """A missing git produced a bare "[Errno 2] No such file or directory:
+    'git'" once per repository instead of saying what to install."""
+
+    def test_missing_git_is_reported_clearly(self, monkeypatch):
+        monkeypatch.setattr(gitlab_backup.subprocess, "call", _raise_file_not_found)
+
+        with pytest.raises(Exception) as exc_info:
+            gitlab_backup.check_git_install()
+
+        assert "git was not found on PATH" in str(exc_info.value)
+
+    def test_missing_git_lfs_is_reported_clearly(self, monkeypatch):
+        monkeypatch.setattr(gitlab_backup.subprocess, "call", _raise_file_not_found)
+
+        with pytest.raises(Exception) as exc_info:
+            gitlab_backup.check_git_lfs_install()
+
+        assert "requires you to have Git LFS installed" in str(exc_info.value)
+
+    def test_a_present_git_passes(self):
+        gitlab_backup.check_git_install()
+
+    def test_a_nonzero_git_also_raises(self, monkeypatch):
+        monkeypatch.setattr(gitlab_backup.subprocess, "call", lambda *a, **k: 1)
+
+        with pytest.raises(Exception):
+            gitlab_backup.check_git_install()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

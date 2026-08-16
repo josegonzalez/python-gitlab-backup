@@ -9,6 +9,7 @@ import tempfile
 
 from gitlab_backup.gitlab_backup import (
     backup_repository,
+    check_git_install,
     check_git_lfs_install,
     get_client,
     logger,
@@ -82,6 +83,8 @@ def main():
         log_level = logging.getLevelName(args.log_level.upper())
         if isinstance(log_level, int):
             logger.root.setLevel(log_level)
+
+    check_git_install()
 
     if args.clone_lfs:
         check_git_lfs_install()
