@@ -18,23 +18,6 @@ from gitlab_backup.gitlab_backup import (
     should_include_repository,
 )
 
-# INFO and DEBUG go to stdout, WARNING and above go to stderr
-log_format = logging.Formatter(
-    fmt="%(asctime)s.%(msecs)03d: %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
-
-stdout_handler = logging.StreamHandler(sys.stdout)
-stdout_handler.setLevel(logging.DEBUG)
-stdout_handler.addFilter(lambda r: r.levelno < logging.WARNING)
-stdout_handler.setFormatter(log_format)
-
-stderr_handler = logging.StreamHandler(sys.stderr)
-stderr_handler.setLevel(logging.WARNING)
-stderr_handler.setFormatter(log_format)
-
-logging.basicConfig(level=logging.INFO, handlers=[stdout_handler, stderr_handler])
-
 
 def filesystem_is_case_insensitive(path):
     """Whether two names differing only in case are one file here.
@@ -72,17 +55,46 @@ def find_colliding_paths(repositories):
     return [sorted(group) for group in by_folded.values() if len(group) > 1]
 
 
+def configure_logging():
+    """Install the CLI's handlers.
+
+    Done on demand rather than at import time so that importing this module
+    does not reconfigure logging for an embedding application.
+    """
+    # INFO and DEBUG go to stdout, WARNING and above go to stderr
+    log_format = logging.Formatter(
+        fmt="%(asctime)s.%(msecs)03d: %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setLevel(logging.DEBUG)
+    stdout_handler.addFilter(lambda r: r.levelno < logging.WARNING)
+    stdout_handler.setFormatter(log_format)
+
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.WARNING)
+    stderr_handler.setFormatter(log_format)
+
+    logging.basicConfig(level=logging.INFO, handlers=[stdout_handler, stderr_handler])
+
+
 def main():
     """Main entry point for gitlab-backup CLI."""
+    configure_logging()
     args = parse_args()
 
+    # Both switches drive the same logger, so an explicit --log-level wins
+    # over --quiet rather than being silently swallowed by it
     if args.quiet:
-        logger.setLevel(logging.WARNING)
+        logger.root.setLevel(logging.WARNING)
 
     if args.log_level:
         log_level = logging.getLevelName(args.log_level.upper())
         if isinstance(log_level, int):
             logger.root.setLevel(log_level)
+        else:
+            raise Exception("Unknown --log-level {0}".format(args.log_level))
 
     check_git_install()
 
@@ -99,7 +111,10 @@ def main():
     if not client:
         raise Exception("Unable to create gitlab client")
 
+    # Resolve once and write it back, so the directory that gets created and
+    # the one repositories are cloned into can never drift apart
     output_directory = os.path.realpath(args.output_directory)
+    args.output_directory = output_directory
     if not os.path.isdir(output_directory):
         logger.info("Create output directory {0}".format(output_directory))
         mkdir_p(output_directory)

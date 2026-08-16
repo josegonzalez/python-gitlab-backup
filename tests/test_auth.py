@@ -18,7 +18,7 @@ class TestGetClientTokens:
             client = get_client(args)
 
         mock_gitlab.assert_called_once_with(
-            HOST, private_token="glpat-secret", ssl_verify=True
+            HOST, private_token="glpat-secret", ssl_verify=True, timeout=60
         )
         assert client is mock_gitlab.return_value
 
@@ -29,7 +29,7 @@ class TestGetClientTokens:
             get_client(args)
 
         mock_gitlab.assert_called_once_with(
-            HOST, oauth_token="oauth-secret", ssl_verify=True
+            HOST, oauth_token="oauth-secret", ssl_verify=True, timeout=60
         )
 
     def test_private_token_wins_over_oauth_token(self, create_args):
@@ -41,7 +41,11 @@ class TestGetClientTokens:
             get_client(args)
 
         _, kwargs = mock_gitlab.call_args
-        assert kwargs == {"private_token": "glpat-secret", "ssl_verify": True}
+        assert kwargs == {
+            "private_token": "glpat-secret",
+            "ssl_verify": True,
+            "timeout": 60,
+        }
 
     def test_private_token_read_from_file_uri(self, create_args, tmp_path):
         token_file = tmp_path / "token"
@@ -52,7 +56,7 @@ class TestGetClientTokens:
             get_client(args)
 
         mock_gitlab.assert_called_once_with(
-            HOST, private_token="glpat-from-file", ssl_verify=True
+            HOST, private_token="glpat-from-file", ssl_verify=True, timeout=60
         )
         assert args.private_token == "glpat-from-file"
 
@@ -65,7 +69,7 @@ class TestGetClientTokens:
             get_client(args)
 
         mock_gitlab.assert_called_once_with(
-            HOST, oauth_token="oauth-from-file", ssl_verify=True
+            HOST, oauth_token="oauth-from-file", ssl_verify=True, timeout=60
         )
 
 
@@ -101,7 +105,7 @@ class TestGetClientBasicAuth:
             get_client(args)
 
         mock_gitlab.assert_called_once_with(
-            HOST, private_token="glpat-secret", ssl_verify=True
+            HOST, private_token="glpat-secret", ssl_verify=True, timeout=60
         )
 
 
@@ -130,7 +134,7 @@ class TestGetClientMisc:
         with patch("gitlab_backup.gitlab_backup.gitlab.Gitlab") as mock_gitlab:
             get_client(args)
 
-        mock_gitlab.assert_called_once_with(HOST, ssl_verify=True)
+        mock_gitlab.assert_called_once_with(HOST, ssl_verify=True, timeout=60)
 
     def test_disable_ssl_verification_inverts_ssl_verify(self, create_args):
         args = create_args(
@@ -153,6 +157,35 @@ class TestGetClientMisc:
         assert client is None
         mock_gitlab.assert_not_called()
         assert "Missing --host flag" in caplog.text
+
+
+class TestApiTimeout:
+    """An unresponsive GitLab used to hang the run for ever, the same failure
+    --git-timeout prevents one layer down."""
+
+    def test_timeout_is_applied_by_default(self, create_args):
+        args = create_args(host=HOST, private_token="glpat-secret")
+
+        with patch("gitlab_backup.gitlab_backup.gitlab.Gitlab") as mock_gitlab:
+            get_client(args)
+
+        assert mock_gitlab.call_args.kwargs["timeout"] == 60
+
+    def test_timeout_is_configurable(self, create_args):
+        args = create_args(host=HOST, private_token="glpat-secret", api_timeout=5)
+
+        with patch("gitlab_backup.gitlab_backup.gitlab.Gitlab") as mock_gitlab:
+            get_client(args)
+
+        assert mock_gitlab.call_args.kwargs["timeout"] == 5
+
+    def test_zero_disables_it(self, create_args):
+        args = create_args(host=HOST, private_token="glpat-secret", api_timeout=0)
+
+        with patch("gitlab_backup.gitlab_backup.gitlab.Gitlab") as mock_gitlab:
+            get_client(args)
+
+        assert mock_gitlab.call_args.kwargs["timeout"] is None
 
 
 if __name__ == "__main__":

@@ -88,12 +88,16 @@ class TestNumericFlagValidation:
     """A negative timeout expires immediately, killing every git command the
     moment it starts."""
 
-    @pytest.mark.parametrize("flag", ["--git-timeout", "--stall-timeout", "--retries"])
+    @pytest.mark.parametrize(
+        "flag", ["--git-timeout", "--stall-timeout", "--retries", "--api-timeout"]
+    )
     def test_negative_values_are_rejected(self, flag):
         with pytest.raises(SystemExit):
             parse_args([flag, "-5"])
 
-    @pytest.mark.parametrize("flag", ["--git-timeout", "--stall-timeout", "--retries"])
+    @pytest.mark.parametrize(
+        "flag", ["--git-timeout", "--stall-timeout", "--retries", "--api-timeout"]
+    )
     def test_zero_is_allowed(self, flag):
         parse_args([flag, "0"])
 
@@ -104,6 +108,7 @@ class TestNumericFlagValidation:
     def test_defaults(self):
         args = parse_args([])
 
+        assert args.api_timeout == 60
         assert args.git_timeout == 0
         assert args.stall_timeout == 60
         assert args.retries == 3
@@ -124,6 +129,17 @@ class TestScopeFlagsAreExclusive:
 
     def test_all_visible_defaults_to_false(self):
         assert parse_args([]).all_visible is False
+
+
+class TestVersion:
+    def test_version_flag_reports_the_package_version(self, capsys):
+        from gitlab_backup import __version__
+
+        with pytest.raises(SystemExit) as exc_info:
+            parse_args(["--version"])
+
+        assert exc_info.value.code == 0
+        assert __version__ in capsys.readouterr().out
 
 
 if __name__ == "__main__":

@@ -16,6 +16,13 @@ import urllib3
 
 from urllib.parse import urlparse, urlunparse
 
+try:
+    from . import __version__
+
+    VERSION = __version__
+except ImportError:
+    VERSION = "unknown"
+
 logger = logging.getLogger(__name__)
 
 SECRET = "*****"
@@ -687,6 +694,8 @@ def get_client(args):
         # genuine certificate problem is still visible by default
         urllib3.disable_warnings()
 
+    api_timeout = getattr(args, "api_timeout", 0) or None
+
     client = None
     if args.private_token:
         args.private_token = read_token(args.private_token)
@@ -695,6 +704,7 @@ def get_client(args):
             args.host,
             private_token=args.private_token,
             ssl_verify=not args.disable_ssl_verification,
+            timeout=api_timeout,
         )
     elif args.oauth_token:
         args.oauth_token = read_token(args.oauth_token)
@@ -703,6 +713,7 @@ def get_client(args):
             args.host,
             oauth_token=args.oauth_token,
             ssl_verify=not args.disable_ssl_verification,
+            timeout=api_timeout,
         )
     elif args.username:
         raise Exception(
@@ -713,13 +724,20 @@ def get_client(args):
             "--private-token instead."
         )
     else:
-        client = gitlab.Gitlab(args.host, ssl_verify=not args.disable_ssl_verification)
+        client = gitlab.Gitlab(
+            args.host,
+            ssl_verify=not args.disable_ssl_verification,
+            timeout=api_timeout,
+        )
 
     return client
 
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Backup a gitlab account")
+    parser.add_argument(
+        "--version", action="version", version="gitlab-backup {0}".format(VERSION)
+    )
     parser.add_argument("--host", dest="host", help="gitlab host")
     # Hidden rather than removed: GitLab dropped password authentication, but
     # an existing invocation should get the actionable error from get_client
@@ -800,7 +818,11 @@ def parse_args(args=None):
         "enumerates millions of projects and will not finish",
     )
     parser.add_argument(
-        "--private_key", default="", dest="private_key", help="Path to the private key"
+        "--private-key",
+        "--private_key",
+        default="",
+        dest="private_key",
+        help="Path to the private key",
     )
     parser.add_argument(
         "--quiet",
@@ -814,6 +836,13 @@ def parse_args(args=None):
         dest="allow_host_change",
         help="permit an existing clone's origin to move to a different host, "
         "for when the gitlab instance was renamed",
+    )
+    parser.add_argument(
+        "--api-timeout",
+        type=non_negative_int,
+        default=60,
+        dest="api_timeout",
+        help="abandon a gitlab api request after this many seconds (0 disables)",
     )
     parser.add_argument(
         "--git-timeout",

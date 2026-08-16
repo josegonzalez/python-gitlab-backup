@@ -541,5 +541,54 @@ class TestListingScope:
         assert "member of" in caplog.text
 
 
+class TestLogLevel:
+    def test_unknown_log_level_raises(self, create_args, tmp_path):
+        args = create_args(output_directory=str(tmp_path), log_level="LOUD")
+
+        with patch.object(cli, "parse_args", return_value=args):
+            with pytest.raises(Exception) as exc_info:
+                cli.main()
+
+        assert "Unknown --log-level LOUD" in str(exc_info.value)
+
+    def test_explicit_log_level_overrides_quiet(self, create_args, tmp_path):
+        """--quiet used to win silently because it set a different logger."""
+        args = create_args(
+            output_directory=str(tmp_path), quiet=True, log_level="DEBUG"
+        )
+        client = type(
+            "C", (), {"projects": type("L", (), {"list": lambda *a, **kw: []})()}
+        )()
+        original = cli.logger.root.level
+
+        try:
+            with patch.object(cli, "parse_args", return_value=args), patch.object(
+                cli, "get_client", return_value=client
+            ):
+                cli.main()
+
+            assert cli.logger.root.level == logging.DEBUG
+            assert cli.logger.getEffectiveLevel() == logging.DEBUG
+        finally:
+            cli.logger.root.setLevel(original)
+            cli.logger.setLevel(logging.NOTSET)
+
+
+class TestOutputDirectory:
+    def test_resolved_path_is_written_back_for_cloning(self, create_args, tmp_path):
+        """The directory that gets created and the one repositories are cloned
+        into must be the same, so backup_repository sees the resolved path."""
+        nested = tmp_path / "link-target"
+        nested.mkdir()
+        args = create_args(output_directory=str(tmp_path / ".." / tmp_path.name))
+        with patch.object(cli, "parse_args", return_value=args), patch.object(
+            cli, "get_client", return_value=client()
+        ):
+            cli.main()
+
+        assert args.output_directory == os.path.realpath(str(tmp_path))
+        assert ".." not in args.output_directory
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
