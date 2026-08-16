@@ -60,6 +60,11 @@ venv
 !.env.example
 *.log
 
+# Tests
+tests
+pytest.ini
+.pytest_cache
+
 # Cache files
 **/__pycache__/
 *.py[cod]
