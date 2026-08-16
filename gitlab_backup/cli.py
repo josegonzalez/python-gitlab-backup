@@ -67,8 +67,23 @@ def main():
         repositories[item.path_with_namespace] = item
 
     repositories = collections.OrderedDict(sorted(repositories.items()))
+
+    # One unreachable or broken repository must not cost you the other 200,
+    # but it still has to make the run exit non-zero
+    failed = []
     for path, item in repositories.items():
-        backup_repository(args, item)
+        try:
+            backup_repository(args, item)
+        except Exception as e:
+            logger.error("Failed to back up {0}: {1}".format(path, e))
+            failed.append(path)
+
+    if failed:
+        raise Exception(
+            "{0} of {1} repositories failed to back up: {2}".format(
+                len(failed), len(repositories), ", ".join(failed)
+            )
+        )
 
 
 def run():

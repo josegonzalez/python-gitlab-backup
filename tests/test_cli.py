@@ -115,5 +115,60 @@ class TestMain:
         assert target.is_dir()
 
 
+class TestFailureIsolation:
+    """One broken repository must not cost you the rest of the backup."""
+
+    def test_remaining_repositories_are_still_attempted(self, create_args, tmp_path):
+        args = create_args(output_directory=str(tmp_path))
+        attempted = []
+
+        def backup(_args, item):
+            attempted.append(item.path_with_namespace)
+            if item.path_with_namespace == "group/b":
+                raise Exception("boom")
+
+        with patch.object(cli, "parse_args", return_value=args), patch.object(
+            cli, "get_client", return_value=client("group/a", "group/b", "group/c")
+        ), patch.object(cli, "backup_repository", side_effect=backup):
+            with pytest.raises(Exception):
+                cli.main()
+
+        assert attempted == ["group/a", "group/b", "group/c"]
+
+    def test_failures_are_reported_and_raise(self, create_args, tmp_path, caplog):
+        args = create_args(output_directory=str(tmp_path))
+
+        with caplog.at_level(logging.ERROR, logger="gitlab_backup.gitlab_backup"):
+            with patch.object(cli, "parse_args", return_value=args), patch.object(
+                cli, "get_client", return_value=client("group/a", "group/b")
+            ), patch.object(cli, "backup_repository", side_effect=Exception("boom")):
+                with pytest.raises(Exception) as exc_info:
+                    cli.main()
+
+        assert "2 of 2 repositories failed to back up" in str(exc_info.value)
+        assert "group/a" in caplog.text
+        assert "boom" in caplog.text
+
+    def test_a_clean_run_does_not_raise(self, create_args, tmp_path):
+        args = create_args(output_directory=str(tmp_path))
+
+        with patch.object(cli, "parse_args", return_value=args), patch.object(
+            cli, "get_client", return_value=client("group/a")
+        ), patch.object(cli, "backup_repository"):
+            cli.main()
+
+    def test_failed_run_exits_nonzero(self, create_args, tmp_path):
+        """The whole point: cron has to be able to detect a broken backup."""
+        args = create_args(output_directory=str(tmp_path))
+
+        with patch.object(cli, "parse_args", return_value=args), patch.object(
+            cli, "get_client", return_value=client("group/a")
+        ), patch.object(cli, "backup_repository", side_effect=Exception("boom")):
+            with pytest.raises(SystemExit) as exc_info:
+                cli.run()
+
+        assert exc_info.value.code == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

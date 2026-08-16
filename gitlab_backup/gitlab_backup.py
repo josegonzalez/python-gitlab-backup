@@ -19,6 +19,10 @@ urllib3.disable_warnings()
 logger = logging.getLogger(__name__)
 
 
+class GitCommandError(Exception):
+    """Raised when a git subprocess exits non-zero."""
+
+
 def logging_subprocess(
     popenargs, stdout_log_level=logging.DEBUG, stderr_log_level=logging.ERROR, **kwargs
 ):
@@ -65,6 +69,20 @@ def logging_subprocess(
         print("{} returned {}:".format(popenargs[0], rc), file=sys.stderr)
         print("\t", " ".join(popenargs), file=sys.stderr)
 
+    return rc
+
+
+def run_git(popenargs, **kwargs):
+    """Run a git command, raising GitCommandError if it fails.
+
+    Every git failure has to surface: a backup that silently skipped half its
+    repositories is worse than one that reports an error.
+    """
+    rc = logging_subprocess(popenargs, **kwargs)
+    if rc != 0:
+        raise GitCommandError(
+            "{0} exited with code {1}".format(" ".join(popenargs), rc)
+        )
     return rc
 
 
@@ -137,16 +155,17 @@ def fetch_repository(
     extra_args = get_git_extra_args(args)
 
     ls_remote_cmd = ["git"] + extra_args + ["ls-remote", remote_url]
+    # An empty-but-existing repository answers ls-remote with an exit code of 0
+    # and no refs, so a non-zero code always means the remote could not be read
     initialized = subprocess.call(
         ls_remote_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
-    if initialized == 128:
-        logger.info(
-            "Skipping {0} ({1}) since it's not initialized".format(
-                name, masked_remote_url
-            )
+    if initialized != 0:
+        raise GitCommandError(
+            "Could not read {0} ({1}): git ls-remote exited with code {2}. "
+            "The repository may be missing, private, or the credentials may be "
+            "invalid".format(name, masked_remote_url, initialized)
         )
-        return
 
     if clone_exists:
         logger.info("Updating {0} in {1}".format(name, local_dir))
@@ -156,12 +175,12 @@ def fetch_repository(
 
         if "origin" not in remotes:
             git_command = ["git"] + extra_args + ["remote", "add", "origin", remote_url]
-            logging_subprocess(git_command, cwd=local_dir)
+            run_git(git_command, cwd=local_dir)
         else:
             git_command = (
                 ["git"] + extra_args + ["remote", "set-url", "origin", remote_url]
             )
-            logging_subprocess(git_command, cwd=local_dir)
+            run_git(git_command, cwd=local_dir)
 
         if lfs_clone:
             git_command = (
@@ -182,7 +201,7 @@ def fetch_repository(
                 + extra_args
                 + ["fetch", "--all", "--force", "--tags", "--prune"]
             )
-        logging_subprocess(git_command, cwd=local_dir)
+        run_git(git_command, cwd=local_dir)
     else:
         logger.info(
             "Cloning {0} repository from {1} to {2}".format(
@@ -195,7 +214,7 @@ def fetch_repository(
             )
         else:
             git_command = ["git"] + extra_args + ["clone", remote_url, local_dir]
-        logging_subprocess(git_command)
+        run_git(git_command)
 
 
 def backup_repository(args, item):

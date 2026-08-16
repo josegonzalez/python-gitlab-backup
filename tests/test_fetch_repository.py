@@ -1,11 +1,10 @@
 """Tests for fetch_repository clone and update flows."""
 
-import logging
 from unittest.mock import patch
 
 import pytest
 
-from gitlab_backup.gitlab_backup import fetch_repository
+from gitlab_backup.gitlab_backup import GitCommandError, fetch_repository
 
 REMOTE_URL = "https://gitlab.example.com/group/project.git"
 
@@ -24,6 +23,7 @@ def git(tmp_path):
             self.ls_remote_rc = 0
             self.is_bare = b"true\n"
             self.remotes = b"origin\n"
+            self.rc_by_subcommand = {}
 
         def _check_output(self, popenargs, **kwargs):
             if "rev-parse" in popenargs:
@@ -47,6 +47,12 @@ def git(tmp_path):
             else:
                 (tmp_path / "repository" / ".git").mkdir(parents=True, exist_ok=True)
 
+        def _logging_subprocess(self, popenargs, **kwargs):
+            for subcommand, rc in self.rc_by_subcommand.items():
+                if subcommand in popenargs:
+                    return rc
+            return 0
+
     helper = Git()
     with patch(
         "gitlab_backup.gitlab_backup.subprocess.call",
@@ -55,7 +61,8 @@ def git(tmp_path):
         "gitlab_backup.gitlab_backup.subprocess.check_output",
         side_effect=helper._check_output,
     ) as mock_check_output, patch(
-        "gitlab_backup.gitlab_backup.logging_subprocess", return_value=0
+        "gitlab_backup.gitlab_backup.logging_subprocess",
+        side_effect=helper._logging_subprocess,
     ) as mock_logging_subprocess:
         helper.call = mock_call
         helper.check_output = mock_check_output
@@ -117,28 +124,52 @@ class TestFreshClone:
 
         assert git.commands
 
+    def test_failed_clone_raises(self, create_args, git):
+        args = create_args()
+        git.rc_by_subcommand = {"clone": 128}
 
-class TestUninitializedRepository:
-    def test_ls_remote_128_skips_the_repository(self, create_args, git, caplog):
+        with pytest.raises(GitCommandError) as exc_info:
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert "exited with code 128" in str(exc_info.value)
+
+
+class TestUnreachableRepository:
+    """git ls-remote answers 0 for an empty-but-existing repository, so any
+    non-zero code means the remote could not be read at all. Treating 128 as
+    "not initialized" used to hide bad credentials behind a silent skip."""
+
+    @pytest.mark.parametrize("rc", [1, 128])
+    def test_unreachable_remote_raises(self, create_args, git, rc):
+        args = create_args()
+        git.ls_remote_rc = rc
+
+        with pytest.raises(GitCommandError) as exc_info:
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert "Could not read group/project" in str(exc_info.value)
+        assert git.commands == []
+
+    def test_failure_names_the_likely_causes(self, create_args, git):
         args = create_args()
         git.ls_remote_rc = 128
 
-        with caplog.at_level(logging.INFO, logger="gitlab_backup.gitlab_backup"):
+        with pytest.raises(GitCommandError) as exc_info:
             fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
 
-        assert git.commands == []
-        assert "since it's not initialized" in caplog.text
+        assert "missing, private, or the credentials may be invalid" in str(
+            exc_info.value
+        )
 
-    def test_masked_url_is_logged(self, create_args, git, caplog):
+    def test_masked_url_is_used_in_failure_messages(self, create_args, git):
         args = create_args()
         git.ls_remote_rc = 128
         remote_url = "https://someone:hunter2@gitlab.example.com/group/project.git"
 
-        with caplog.at_level(logging.INFO, logger="gitlab_backup.gitlab_backup"):
+        with pytest.raises(GitCommandError) as exc_info:
             fetch_repository(args, "group/project", remote_url, git.local_dir)
 
-        assert "hunter2" not in caplog.text
-        assert "*****" in caplog.text
+        assert "hunter2" not in str(exc_info.value)
 
 
 class TestExistingClone:
@@ -245,6 +276,14 @@ class TestExistingClone:
         )
 
         assert git.commands == [["git", "clone", "--mirror", REMOTE_URL, git.local_dir]]
+
+    def test_failed_fetch_raises(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+        git.rc_by_subcommand = {"fetch": 1}
+
+        with pytest.raises(GitCommandError):
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
 
 
 if __name__ == "__main__":
