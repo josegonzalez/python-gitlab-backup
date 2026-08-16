@@ -319,6 +319,20 @@ class TestExistingClone:
 
         assert git.commands == [["git", "clone", "--mirror", REMOTE_URL, git.local_dir]]
 
+    def test_directory_that_is_not_a_repository_raises(self, create_args, git):
+        """Regression: this used to raise CalledProcessError and abort the
+        entire run instead of failing just this repository."""
+        args = create_args()
+        git.make_clone(bare=True)
+        git.git_dir = subprocess.CalledProcessError(128, "git")
+
+        with pytest.raises(GitCommandError) as exc_info:
+            fetch_repository(
+                args, "group/project", REMOTE_URL, git.local_dir, bare_clone=True
+            )
+
+        assert "is not a git repository" in str(exc_info.value)
+
     def test_failed_fetch_raises(self, create_args, git):
         args = create_args()
         git.make_clone()
@@ -326,6 +340,15 @@ class TestExistingClone:
 
         with pytest.raises(GitCommandError):
             fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+    def test_failed_lfs_fetch_raises(self, create_args, git):
+        args = create_args()
+        git.make_clone()
+        git.rc_by_subcommand = {"lfs": 2}
+        with pytest.raises(GitCommandError):
+            fetch_repository(
+                args, "group/project", REMOTE_URL, git.local_dir, lfs_clone=True
+            )
 
 
 class TestCorruptClone:
