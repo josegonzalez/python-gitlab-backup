@@ -54,17 +54,17 @@ def git(tmp_path):
             return 0
 
     helper = Git()
-    with patch(
-        "gitlab_backup.gitlab_backup.subprocess.call",
+    with patch("gitlab_backup.gitlab_backup.time.sleep"), patch(
+        "gitlab_backup.gitlab_backup.probe_remote",
         side_effect=lambda *a, **kw: helper.ls_remote_rc,
-    ) as mock_call, patch(
+    ) as mock_probe, patch(
         "gitlab_backup.gitlab_backup.subprocess.check_output",
         side_effect=helper._check_output,
     ) as mock_check_output, patch(
         "gitlab_backup.gitlab_backup.logging_subprocess",
         side_effect=helper._logging_subprocess,
     ) as mock_logging_subprocess:
-        helper.call = mock_call
+        helper.probe = mock_probe
         helper.check_output = mock_check_output
         helper.logging_subprocess = mock_logging_subprocess
         yield helper
@@ -122,8 +122,8 @@ class TestFreshClone:
 
         fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
 
-        assert git.call.call_args.args[0] == ["git", "ls-remote", REMOTE_URL]
-        assert git.call.call_args.kwargs["env"]["GIT_CONFIG_KEY_0"] == (
+        assert git.probe.call_args.args[0] == REMOTE_URL
+        assert git.probe.call_args.kwargs["git_env"]["GIT_CONFIG_KEY_0"] == (
             "http.extraHeader"
         )
 
@@ -278,7 +278,7 @@ class TestExistingClone:
         )
 
         assert git.commands == []
-        git.call.assert_not_called()
+        git.probe.assert_not_called()
 
     def test_bare_clone_detected_via_rev_parse(self, create_args, git):
         args = create_args()
@@ -309,6 +309,104 @@ class TestExistingClone:
 
         with pytest.raises(GitCommandError):
             fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+
+class TestRetries:
+    """One network blip should not fail an otherwise healthy repository."""
+
+    def test_a_failed_fetch_is_retried(self, create_args, git):
+        args = create_args(retries=2)
+        git.make_clone()
+        attempts = {"n": 0}
+
+        def flaky(popenargs, **kwargs):
+            if "fetch" not in popenargs:
+                return 0
+            attempts["n"] += 1
+            return 0 if attempts["n"] > 2 else 1
+
+        git.logging_subprocess.side_effect = flaky
+
+        fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert attempts["n"] == 3
+
+    def test_retries_are_exhausted_then_it_raises(self, create_args, git):
+        args = create_args(retries=2)
+        git.make_clone()
+        git.rc_by_subcommand = {"fetch": 1}
+
+        with pytest.raises(GitCommandError):
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        fetches = [c for c in git.commands if "fetch" in c]
+        assert len(fetches) == 3
+
+    def test_no_retries_when_disabled(self, create_args, git):
+        args = create_args(retries=0)
+        git.make_clone()
+        git.rc_by_subcommand = {"fetch": 1}
+
+        with pytest.raises(GitCommandError):
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert len([c for c in git.commands if "fetch" in c]) == 1
+
+    def test_a_clone_is_retried_when_the_path_is_clear(self, create_args, git):
+        args = create_args(retries=2)
+        git.rc_by_subcommand = {"clone": 1}
+
+        with pytest.raises(GitCommandError):
+            fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert len([c for c in git.commands if "clone" in c]) == 3
+
+
+class TestTimeout:
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {},
+            {"lfs_clone": True},
+            {"bare_clone": True},
+            {"bare_clone": True, "lfs_clone": True},
+        ],
+    )
+    def test_timeout_is_passed_to_every_git_command(self, create_args, git, kwargs):
+        """Every git invocation, on every path: one that slips through is a
+        command that can hang for ever."""
+        args = create_args(git_timeout=30)
+        git.make_clone(bare=kwargs.get("bare_clone", False))
+
+        fetch_repository(args, "group/project", REMOTE_URL, git.local_dir, **kwargs)
+
+        assert git.logging_subprocess.call_args_list
+        for call in git.logging_subprocess.call_args_list:
+            assert call.kwargs["timeout"] == 30, call.args[0]
+        assert git.probe.call_args.kwargs["timeout"] == 30
+
+    def test_a_failed_lfs_fetch_is_retried(self, create_args, git):
+        """Regression: the lfs fetch was the one command left without retries
+        or a timeout, so an LFS blip failed the repository outright."""
+        args = create_args(retries=2)
+        git.make_clone()
+        git.rc_by_subcommand = {"lfs": 1}
+
+        with pytest.raises(GitCommandError):
+            fetch_repository(
+                args, "group/project", REMOTE_URL, git.local_dir, lfs_clone=True
+            )
+
+        assert len([c for c in git.commands if "lfs" in c]) == 3
+
+
+class TestProbeRetries:
+    def test_retries_are_passed_to_the_probe(self, create_args, git):
+        args = create_args(retries=4)
+
+        fetch_repository(args, "group/project", REMOTE_URL, git.local_dir)
+
+        assert git.probe.call_args.kwargs["retries"] == 4
 
 
 if __name__ == "__main__":

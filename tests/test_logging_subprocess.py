@@ -1,6 +1,7 @@
 """Tests for logging_subprocess pipe handling."""
 
 import logging
+import subprocess
 import sys
 import threading
 
@@ -169,6 +170,140 @@ class TestCredentialMasking:
             "fetch",
             "--all",
         ]
+
+
+class TestRunGit:
+    def test_success_returns_zero(self):
+        assert gitlab_backup.run_git([sys.executable, "-c", "pass"]) == 0
+
+    def test_failure_raises_with_a_masked_command(self):
+        with pytest.raises(gitlab_backup.GitCommandError) as exc_info:
+            gitlab_backup.run_git(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.exit(7)",
+                    "https://someone:hunter2@gitlab.example.com/x.git",
+                ]
+            )
+
+        assert "exited with code 7" in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+
+
+class TestRunGitRetries:
+    """Retries must not repeat a command that is no longer safe to repeat."""
+
+    @staticmethod
+    def _failing(rc=1):
+        return [sys.executable, "-c", "import sys; sys.exit({0})".format(rc)]
+
+    def test_retries_until_the_limit(self, monkeypatch):
+        monkeypatch.setattr(gitlab_backup.time, "sleep", lambda _s: None)
+        calls = []
+        real = gitlab_backup.logging_subprocess
+
+        def counting(popenargs, **kwargs):
+            calls.append(popenargs)
+            return real(popenargs, **kwargs)
+
+        monkeypatch.setattr(gitlab_backup, "logging_subprocess", counting)
+
+        with pytest.raises(gitlab_backup.GitCommandError):
+            gitlab_backup.run_git(self._failing(), retries=2)
+
+        assert len(calls) == 3
+
+    def test_retry_if_can_veto_a_retry(self, monkeypatch):
+        """git removes a directory it created when a clone fails; if something
+        still occupies the path, repeating the clone would fail differently."""
+        monkeypatch.setattr(gitlab_backup.time, "sleep", lambda _s: None)
+        calls = []
+        real = gitlab_backup.logging_subprocess
+
+        def counting(popenargs, **kwargs):
+            calls.append(popenargs)
+            return real(popenargs, **kwargs)
+
+        monkeypatch.setattr(gitlab_backup, "logging_subprocess", counting)
+
+        with pytest.raises(gitlab_backup.GitCommandError):
+            gitlab_backup.run_git(self._failing(), retries=5, retry_if=lambda: False)
+
+        assert len(calls) == 1
+
+    def test_backoff_widens_between_attempts(self, monkeypatch):
+        pauses = []
+        monkeypatch.setattr(gitlab_backup.time, "sleep", pauses.append)
+
+        with pytest.raises(gitlab_backup.GitCommandError):
+            gitlab_backup.run_git(self._failing(), retries=3)
+
+        assert pauses == sorted(pauses)
+        assert len(pauses) == 3
+        assert pauses[0] < pauses[-1]
+
+    def test_a_successful_command_is_not_retried(self, monkeypatch):
+        monkeypatch.setattr(gitlab_backup.time, "sleep", lambda _s: None)
+
+        assert gitlab_backup.run_git([sys.executable, "-c", "pass"], retries=3) == 0
+
+
+class TestTimeoutKillsTheChild:
+    def test_a_hung_command_is_killed_and_reported(self, caplog):
+        """Without this the process waits for ever on a dead connection."""
+        with caplog.at_level(logging.ERROR, logger="gitlab_backup.gitlab_backup"):
+            rc = gitlab_backup.logging_subprocess(
+                [sys.executable, "-c", "import time; time.sleep(30)"], timeout=1
+            )
+
+        assert rc == gitlab_backup.TIMEOUT_RETURNCODE
+        assert "exceeded the 1s timeout" in caplog.text
+
+    def test_a_prompt_command_is_unaffected(self):
+        assert (
+            gitlab_backup.logging_subprocess([sys.executable, "-c", "pass"], timeout=30)
+            == 0
+        )
+
+
+class TestProbeRemote:
+    """The reachability probe retries like the fetch and clone that follow it,
+    so a blip there does not fail an otherwise healthy repository."""
+
+    UNREACHABLE = "/nonexistent/definitely-not-a-repo.git"
+
+    def test_an_unreachable_remote_is_retried(self, monkeypatch):
+        pauses = []
+        monkeypatch.setattr(gitlab_backup.time, "sleep", pauses.append)
+
+        rc = gitlab_backup.probe_remote(self.UNREACHABLE, retries=2)
+
+        assert rc != 0
+        assert len(pauses) == 2
+
+    def test_no_retries_when_disabled(self, monkeypatch):
+        pauses = []
+        monkeypatch.setattr(gitlab_backup.time, "sleep", pauses.append)
+
+        assert gitlab_backup.probe_remote(self.UNREACHABLE, retries=0) != 0
+        assert pauses == []
+
+    def test_a_reachable_remote_is_not_retried(self, tmp_path, monkeypatch):
+        pauses = []
+        monkeypatch.setattr(gitlab_backup.time, "sleep", pauses.append)
+        repo = tmp_path / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(repo)], check=True)
+
+        assert gitlab_backup.probe_remote(str(repo), retries=3) == 0
+        assert pauses == []
+
+    def test_a_hung_probe_is_killed(self, caplog):
+        with caplog.at_level(logging.ERROR, logger="gitlab_backup.gitlab_backup"):
+            rc = gitlab_backup.probe_remote("https://10.255.255.1/x.git", timeout=1)
+
+        assert rc == gitlab_backup.TIMEOUT_RETURNCODE
+        assert "exceeded the 1s timeout" in caplog.text
 
 
 if __name__ == "__main__":

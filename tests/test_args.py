@@ -84,5 +84,30 @@ class TestParseArgsFlags:
             parse_args(["--not-a-real-flag"])
 
 
+class TestNumericFlagValidation:
+    """A negative timeout expires immediately, killing every git command the
+    moment it starts."""
+
+    @pytest.mark.parametrize("flag", ["--git-timeout", "--stall-timeout", "--retries"])
+    def test_negative_values_are_rejected(self, flag):
+        with pytest.raises(SystemExit):
+            parse_args([flag, "-5"])
+
+    @pytest.mark.parametrize("flag", ["--git-timeout", "--stall-timeout", "--retries"])
+    def test_zero_is_allowed(self, flag):
+        parse_args([flag, "0"])
+
+    def test_non_numeric_is_rejected(self):
+        with pytest.raises(SystemExit):
+            parse_args(["--git-timeout", "soon"])
+
+    def test_defaults(self):
+        args = parse_args([])
+
+        assert args.git_timeout == 0
+        assert args.stall_timeout == 60
+        assert args.retries == 3
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

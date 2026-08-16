@@ -5,9 +5,11 @@ import base64
 import getpass
 import logging
 import os
+import collections
 import subprocess
 import sys
 import threading
+import time
 
 import gitlab
 import urllib3
@@ -17,6 +19,18 @@ from urllib.parse import urlparse, urlunparse
 logger = logging.getLogger(__name__)
 
 SECRET = "*****"
+
+# How many trailing stderr lines to quote back when a git command fails
+STDERR_TAIL_LINES = 5
+
+# Reported when a git command is killed for exceeding --git-timeout
+TIMEOUT_RETURNCODE = 124
+
+# Nth retry waits N times this many seconds
+RETRY_BACKOFF_SECONDS = 5
+
+# A transfer below this many bytes/sec for --stall-timeout seconds is stalled
+STALL_SPEED_BYTES = 1000
 
 FILE_URI_PREFIX = "file://"
 
@@ -45,24 +59,36 @@ def mask_command(popenargs):
 
 
 def logging_subprocess(
-    popenargs, stdout_log_level=logging.DEBUG, stderr_log_level=logging.ERROR, **kwargs
+    popenargs,
+    stdout_log_level=logging.DEBUG,
+    stderr_log_level=logging.ERROR,
+    stderr_buffer=None,
+    timeout=None,
+    **kwargs
 ):
     """
     Variant of subprocess.call that accepts a logger instead of stdout/stderr,
     and logs stdout messages via logger.debug and stderr messages via
     logger.error.
+
+    Pass a list as stderr_buffer to also collect the child's stderr lines, so
+    a caller can quote them when the command fails. Pass timeout to bound how
+    long the child may run; it is killed and TIMEOUT_RETURNCODE is returned.
     """
     child = subprocess.Popen(
         popenargs, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs
     )
 
-    def log_output(pipe, log_level):
+    def log_output(pipe, log_level, buffer=None):
         # Drain the pipe from a thread so the child never blocks on a full
         # pipe buffer, logging each line as it arrives.
         with pipe:
             for line in iter(pipe.readline, b""):
+                line = line.rstrip(b"\r\n")
+                if buffer is not None:
+                    buffer.append(line)
                 try:
-                    logger.log(log_level, line.rstrip(b"\r\n"))
+                    logger.log(log_level, line)
                 except Exception:
                     # Keep draining even if logging fails, or the child
                     # blocks on a full pipe buffer again
@@ -73,13 +99,25 @@ def logging_subprocess(
             target=log_output, args=(child.stdout, stdout_log_level), daemon=True
         ),
         threading.Thread(
-            target=log_output, args=(child.stderr, stderr_log_level), daemon=True
+            target=log_output,
+            args=(child.stderr, stderr_log_level, stderr_buffer),
+            daemon=True,
         ),
     ]
     for thread in threads:
         thread.start()
 
-    rc = child.wait()
+    try:
+        rc = child.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        logger.error(
+            "{0} exceeded the {1}s timeout, terminating it".format(
+                " ".join(mask_command(popenargs)), timeout
+            )
+        )
+        child.kill()
+        child.wait()
+        rc = TIMEOUT_RETURNCODE
 
     # Timeout in case a grandchild inherited the pipe handles and keeps
     # them open past the child's exit, which would delay EOF indefinitely
@@ -93,18 +131,49 @@ def logging_subprocess(
     return rc
 
 
-def run_git(popenargs, **kwargs):
+def run_git(popenargs, retries=0, retry_if=None, **kwargs):
     """Run a git command, raising GitCommandError if it fails.
 
     Every git failure has to surface: a backup that silently skipped half its
     repositories is worse than one that reports an error.
+
+    git writes ordinary progress to stderr, so those lines are logged at debug
+    level and only quoted back at error level if the command actually fails.
+
+    A failed command is retried up to `retries` times with a widening pause, so
+    one network blip does not fail an otherwise healthy repository. Pass
+    retry_if to veto a retry that would not be safe to repeat.
     """
-    rc = logging_subprocess(popenargs, **kwargs)
-    if rc != 0:
-        raise GitCommandError(
-            "{0} exited with code {1}".format(" ".join(mask_command(popenargs)), rc)
+    kwargs.setdefault("stderr_log_level", logging.DEBUG)
+
+    attempt = 0
+    while True:
+        # Bounded: a chatty git command can emit millions of stderr lines and
+        # only the tail is ever quoted back
+        stderr_lines = collections.deque(maxlen=STDERR_TAIL_LINES)
+        rc = logging_subprocess(popenargs, stderr_buffer=stderr_lines, **kwargs)
+        if rc == 0:
+            return rc
+
+        if attempt >= retries or (retry_if is not None and not retry_if()):
+            detail = ""
+            if stderr_lines:
+                tail = [line.decode("utf-8", "replace") for line in stderr_lines]
+                detail = ": {0}".format(" / ".join(tail))
+            raise GitCommandError(
+                "{0} exited with code {1}{2}".format(
+                    " ".join(mask_command(popenargs)), rc, detail
+                )
+            )
+
+        attempt += 1
+        pause = RETRY_BACKOFF_SECONDS * attempt
+        logger.warning(
+            "{0} exited with code {1}, retrying in {2}s ({3} of {4})".format(
+                " ".join(mask_command(popenargs)), rc, pause, attempt, retries
+            )
         )
-    return rc
+        time.sleep(pause)
 
 
 def mkdir_p(*args):
@@ -165,25 +234,98 @@ def get_git_env(args):
     it does not appear in `ps` output. Requires git 2.31+.
     """
     env = os.environ.copy()
+    entries = []
 
     token = read_token(args.private_token or args.oauth_token)
-    if not token:
-        return env
+    if token:
+        auth_pair = "oauth2:{0}".format(token).encode("utf-8")
+        b64_auth = base64.b64encode(auth_pair).decode("utf-8")
+        entries.append(
+            ("http.extraHeader", "Authorization: Basic {0}".format(b64_auth))
+        )
 
-    auth_pair = "oauth2:{0}".format(token).encode("utf-8")
-    b64_auth = base64.b64encode(auth_pair).decode("utf-8")
+    # Abandon an HTTP transfer that has stalled rather than one that is merely
+    # slow, so a large repository still downloads but a dead connection does
+    # not hang the run for ever
+    stall_timeout = getattr(args, "stall_timeout", 0)
+    if stall_timeout:
+        entries.append(("http.lowSpeedLimit", str(STALL_SPEED_BYTES)))
+        entries.append(("http.lowSpeedTime", str(stall_timeout)))
+
+    if not entries:
+        return env
 
     try:
         count = int(env.get("GIT_CONFIG_COUNT", "0"))
     except ValueError:
         count = 0
 
-    env["GIT_CONFIG_KEY_{0}".format(count)] = "http.extraHeader"
-    env["GIT_CONFIG_VALUE_{0}".format(count)] = "Authorization: Basic {0}".format(
-        b64_auth
-    )
-    env["GIT_CONFIG_COUNT"] = str(count + 1)
+    for key, value in entries:
+        env["GIT_CONFIG_KEY_{0}".format(count)] = key
+        env["GIT_CONFIG_VALUE_{0}".format(count)] = value
+        count += 1
+
+    env["GIT_CONFIG_COUNT"] = str(count)
     return env
+
+
+def probe_remote(remote_url, git_env=None, timeout=None, retries=0):
+    """Return git ls-remote's exit code, killing it if it exceeds timeout.
+
+    subprocess.call would raise TimeoutExpired and leave the child running, so
+    the hung git process would outlive the backup.
+
+    Retried like the fetch and clone that follow it, so a blip on the
+    reachability probe does not fail an otherwise healthy repository.
+    """
+    attempt = 0
+    while True:
+        child = subprocess.Popen(
+            ["git", "ls-remote", remote_url],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=git_env,
+        )
+        try:
+            rc = child.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "git ls-remote {0} exceeded the {1}s timeout, terminating it".format(
+                    mask_password(remote_url), timeout
+                )
+            )
+            child.kill()
+            child.wait()
+            rc = TIMEOUT_RETURNCODE
+
+        if rc == 0 or attempt >= retries:
+            return rc
+
+        attempt += 1
+        pause = RETRY_BACKOFF_SECONDS * attempt
+        logger.warning(
+            "git ls-remote {0} exited with code {1}, retrying in {2}s "
+            "({3} of {4})".format(
+                mask_password(remote_url), rc, pause, attempt, retries
+            )
+        )
+        time.sleep(pause)
+
+
+def non_negative_int(value):
+    """argparse type for a count or a number of seconds.
+
+    A negative timeout expires immediately, which would kill every git command
+    the moment it starts, so reject it rather than let it through silently.
+    """
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("{0!r} is not an integer".format(value))
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("{0} must not be negative".format(parsed))
+    return parsed
 
 
 def check_git_lfs_install():
@@ -211,6 +353,9 @@ def fetch_repository(
 ):
     git_env = get_git_env(args)
 
+    retries = getattr(args, "retries", 0)
+    timeout = getattr(args, "git_timeout", 0) or None
+
     if bare_clone:
         if os.path.exists(local_dir):
             clone_exists = (
@@ -233,12 +378,8 @@ def fetch_repository(
 
     # An empty-but-existing repository answers ls-remote with an exit code of 0
     # and no refs, so a non-zero code always means the remote could not be read
-    initialized = subprocess.call(
-        ["git", "ls-remote", remote_url],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=git_env,
+    initialized = probe_remote(
+        remote_url, git_env=git_env, timeout=timeout, retries=retries
     )
     if initialized != 0:
         raise GitCommandError(
@@ -257,15 +398,17 @@ def fetch_repository(
 
         if "origin" not in remotes:
             git_command = ["git", "remote", "add", "origin", remote_url]
-            run_git(git_command, cwd=local_dir, env=git_env)
+            run_git(git_command, cwd=local_dir, env=git_env, timeout=timeout)
         else:
             git_command = ["git", "remote", "set-url", "origin", remote_url]
-            run_git(git_command, cwd=local_dir, env=git_env)
+            run_git(git_command, cwd=local_dir, env=git_env, timeout=timeout)
 
         run_git(
             ["git", "fetch", "--all", "--force", "--tags", "--prune"],
             cwd=local_dir,
             env=git_env,
+            retries=retries,
+            timeout=timeout,
         )
     else:
         logger.info(
@@ -277,12 +420,26 @@ def fetch_repository(
             git_command = ["git", "clone", "--mirror", remote_url, local_dir]
         else:
             git_command = ["git", "clone", remote_url, local_dir]
-        run_git(git_command, env=git_env)
+        # git removes a directory it created when a clone fails, so a retry is
+        # only safe while nothing occupies the path
+        run_git(
+            git_command,
+            env=git_env,
+            retries=retries,
+            retry_if=lambda: not os.path.exists(local_dir),
+            timeout=timeout,
+        )
 
     # LFS objects are fetched in addition to the refs above, never instead of
     # them, otherwise a --clone-lfs backup would stop receiving new commits
     if lfs_clone:
-        run_git(["git", "lfs", "fetch", "--all", "--prune"], cwd=local_dir, env=git_env)
+        run_git(
+            ["git", "lfs", "fetch", "--all", "--prune"],
+            cwd=local_dir,
+            env=git_env,
+            retries=retries,
+            timeout=timeout,
+        )
 
 
 def backup_repository(args, item):
@@ -445,6 +602,28 @@ def parse_args(args=None):
         action="store_true",
         dest="quiet",
         help="only log warnings and errors",
+    )
+    parser.add_argument(
+        "--git-timeout",
+        type=non_negative_int,
+        default=0,
+        dest="git_timeout",
+        help="abandon a single git command after this many seconds (0 disables)",
+    )
+    parser.add_argument(
+        "--stall-timeout",
+        type=non_negative_int,
+        default=60,
+        dest="stall_timeout",
+        help="abandon an http transfer that makes no progress for this many "
+        "seconds (0 disables)",
+    )
+    parser.add_argument(
+        "--retries",
+        type=non_negative_int,
+        default=3,
+        dest="retries",
+        help="how many times to retry a failed git command",
     )
     parser.add_argument(
         "--log-level",

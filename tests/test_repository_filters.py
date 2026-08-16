@@ -90,7 +90,7 @@ class TestGetGitEnv:
     """The credential goes in the environment so it stays out of `ps`."""
 
     def test_no_token_leaves_git_config_untouched(self, create_args):
-        args = create_args()
+        args = create_args(stall_timeout=0)
 
         env = get_git_env(args)
 
@@ -98,7 +98,7 @@ class TestGetGitEnv:
         assert "GIT_CONFIG_KEY_0" not in env
 
     def test_private_token_becomes_a_git_config_entry(self, create_args):
-        args = create_args(private_token="glpat-secret")
+        args = create_args(private_token="glpat-secret", stall_timeout=0)
 
         env = get_git_env(args)
 
@@ -136,7 +136,7 @@ class TestGetGitEnv:
         monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
         monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
         monkeypatch.setenv("GIT_CONFIG_VALUE_0", "someone")
-        args = create_args(private_token="glpat-secret")
+        args = create_args(private_token="glpat-secret", stall_timeout=0)
 
         env = get_git_env(args)
 
@@ -146,7 +146,7 @@ class TestGetGitEnv:
 
     def test_unparseable_git_config_count_is_ignored(self, create_args, monkeypatch):
         monkeypatch.setenv("GIT_CONFIG_COUNT", "not-a-number")
-        args = create_args(private_token="glpat-secret")
+        args = create_args(private_token="glpat-secret", stall_timeout=0)
 
         env = get_git_env(args)
 
@@ -189,6 +189,54 @@ class TestReadToken:
 
         expected = base64.b64encode(b"oauth2:glpat-from-file").decode("utf-8")
         assert env["GIT_CONFIG_VALUE_0"] == "Authorization: Basic {0}".format(expected)
+
+
+class TestStallDetection:
+    """A dead connection used to hang the run for ever. git's own low-speed
+    limit aborts a transfer that stops making progress, while leaving a merely
+    slow but healthy download alone."""
+
+    def test_stall_timeout_is_configured_by_default(self, create_args):
+        args = create_args()
+
+        env = get_git_env(args)
+        config = dict(
+            (env["GIT_CONFIG_KEY_{0}".format(i)], env["GIT_CONFIG_VALUE_{0}".format(i)])
+            for i in range(int(env["GIT_CONFIG_COUNT"]))
+        )
+
+        assert config["http.lowSpeedTime"] == "60"
+        assert int(config["http.lowSpeedLimit"]) > 0
+
+    def test_stall_timeout_is_configurable(self, create_args):
+        args = create_args(stall_timeout=15)
+
+        env = get_git_env(args)
+        config = dict(
+            (env["GIT_CONFIG_KEY_{0}".format(i)], env["GIT_CONFIG_VALUE_{0}".format(i)])
+            for i in range(int(env["GIT_CONFIG_COUNT"]))
+        )
+
+        assert config["http.lowSpeedTime"] == "15"
+
+    def test_zero_disables_it(self, create_args):
+        args = create_args(stall_timeout=0, private_token="glpat-secret")
+
+        env = get_git_env(args)
+
+        assert env["GIT_CONFIG_COUNT"] == "1"
+        assert env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
+
+    def test_credential_and_stall_settings_coexist(self, create_args):
+        args = create_args(private_token="glpat-secret", stall_timeout=30)
+
+        env = get_git_env(args)
+        keys = [
+            env["GIT_CONFIG_KEY_{0}".format(i)]
+            for i in range(int(env["GIT_CONFIG_COUNT"]))
+        ]
+
+        assert keys == ["http.extraHeader", "http.lowSpeedLimit", "http.lowSpeedTime"]
 
 
 if __name__ == "__main__":
