@@ -34,7 +34,11 @@ setup(
     author="Jose Diaz-Gonzalez",
     author_email="gitlab-backup@josediazgonzalez.com",
     packages=["gitlab_backup"],
-    scripts=["bin/gitlab-backup"],
+    entry_points={
+        "console_scripts": [
+            "gitlab-backup=gitlab_backup.cli:run",
+        ],
+    },
     url="http://github.com/josegonzalez/python-gitlab-backup",
     license="MIT",
     classifiers=[
@@ -51,5 +55,6 @@ setup(
     long_description=read_file("README.rst"),
     long_description_content_type="text/x-rst",
     install_requires=read_file("requirements.txt").splitlines(),
+    python_requires=">=3.10",
     zip_safe=True,
 )

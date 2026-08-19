@@ -16,6 +16,9 @@ pkg
 *.egg
 *.egg-info
 
+# Test artifacts
+.pytest_cache
+
 # Debian Files
 debian/files
 debian/python-gitlab-backup*
@@ -40,6 +43,11 @@ README
 # RSA
 id_rsa
 id_rsa.pub
+
+# Environment variables
+.env
+.env.*
+!.env.example
 
 # Virtual env
 venv
