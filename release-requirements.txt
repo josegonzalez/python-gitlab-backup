@@ -7,9 +7,14 @@ flake8==7.3.0
 pytest==9.1.1
 
 # Release & Publishing
-twine==7.0.0
 gitchangelog==3.0.4
 setuptools==84.0.0
+six==1.17.0
+tqdm==4.70.0
+twine==7.0.0
+urllib3==2.7.0
+webencodings==0.6.1
+zipp==4.1.0
 
 # Documentation
 restructuredtext-lint==2.0.2
