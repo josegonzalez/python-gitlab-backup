@@ -10,7 +10,7 @@ pytest==9.1.1
 gitchangelog==3.0.4
 setuptools==84.0.0
 six==1.17.0
-tqdm==4.70.0
+tqdm==4.70.1
 twine==7.0.0
 urllib3==2.7.0
 webencodings==0.6.1
