@@ -14,7 +14,7 @@ tqdm==4.70.1
 twine==7.0.0
 urllib3==2.8.0
 webencodings==0.6.1
-zipp==4.1.0
+zipp==4.1.1
 
 # Documentation
 restructuredtext-lint==2.0.2
