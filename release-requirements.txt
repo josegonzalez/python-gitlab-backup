@@ -8,7 +8,7 @@ pytest==9.1.1
 
 # Release & Publishing
 gitchangelog==3.0.4
-setuptools==84.0.0
+setuptools==84.2.0
 six==1.17.0
 tqdm==4.70.1
 twine==7.0.0
