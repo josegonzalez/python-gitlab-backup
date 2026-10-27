@@ -8,13 +8,13 @@ pytest==9.1.1
 
 # Release & Publishing
 gitchangelog==3.0.4
-setuptools==84.2.0
+setuptools==84.2.1
 six==1.17.0
 tqdm==4.70.1
 twine==7.0.0
 urllib3==2.8.0
 webencodings==0.6.1
-zipp==4.1.1
+zipp==4.1.2
 
 # Documentation
 restructuredtext-lint==2.0.2
